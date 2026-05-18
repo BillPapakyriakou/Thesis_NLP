@@ -1,0 +1,22 @@
+# virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# PyCharm
+.idea/
+
+# local data / outputs
+data/raw/
+data/cache/
+results/
+*.parquet
+*.jsonl
+*.pkl
+
+# secrets
+.env

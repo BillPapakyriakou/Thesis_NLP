@@ -1,0 +1,28 @@
+[project]
+name = "Thesis_NLP"
+version = "0.1.0"
+description = "Diploma thesis code for table question answering with LLM-generated Python"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "tqdm>=4.66.0",
+    "datasets>=2.19.0",
+    "databench_eval>=4.0.1",
+    "ollama>=0.6.0",
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
+    "pyarrow>=15.0.0",
+    "pydantic>=2.7.0",
+    "tabulate"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+    "ipykernel>=6.29.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

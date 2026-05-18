@@ -1,0 +1,17 @@
+pyproject.toml
+src/Thesis_NLP.egg-info/PKG-INFO
+src/Thesis_NLP.egg-info/SOURCES.txt
+src/Thesis_NLP.egg-info/dependency_links.txt
+src/Thesis_NLP.egg-info/requires.txt
+src/Thesis_NLP.egg-info/top_level.txt
+src/diploma_tqa/__init__.py
+src/diploma_tqa/data/__init__.py
+src/diploma_tqa/data/databench_loader.py
+src/diploma_tqa/execution/__init__.py
+src/diploma_tqa/execution/code_extract.py
+src/diploma_tqa/execution/pandas_executor.py
+src/diploma_tqa/llms/__init__.py
+src/diploma_tqa/llms/ollama_client.py
+src/diploma_tqa/prompts/__init__.py
+src/diploma_tqa/prompts/baseline_prompts.py
+src/diploma_tqa/scripts/run_smoke_test.py
