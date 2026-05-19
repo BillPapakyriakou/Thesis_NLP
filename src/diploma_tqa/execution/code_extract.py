@@ -69,10 +69,15 @@ def extract_answer_body(text: str) -> str:
     else:
         body = text.strip()
 
-    # If body has top-level "return result", keep it.
-    # If body has only "result = ...", add return result.
+    # If body has no return statement, assume it created `result`.
     if "return " not in body:
         body = body + "\nreturn result"
+
+        # Normalize indentation before adding our own indentation.
+        # This prevents cases like:
+        #     result = ...
+        #         return result
+    body = textwrap.dedent(body).strip()
 
     if not body:
         raise ValueError("No executable answer body found.")
