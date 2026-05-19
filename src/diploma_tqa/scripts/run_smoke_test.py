@@ -36,11 +36,14 @@ def main():
         try:
             code = extract_answer_body(raw)
             pred = execute_answer_body(code, df)
-            error = None
-            success = not (
-                    str(pred).startswith("__CODE_ERROR__")
-                    or str(pred).startswith("__TIMEOUT__")
-            )
+
+            if str(pred).startswith("__CODE_ERROR__") or str(pred).startswith("__TIMEOUT__"):
+                success = False
+                error = str(pred)
+            else:
+                success = True
+                error = None
+
         except Exception as e:
             code = None
             pred = f"__CODE_ERROR__: {e}"
