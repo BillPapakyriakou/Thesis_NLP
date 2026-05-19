@@ -6,11 +6,81 @@ def strip_code_fences(text: str) -> str:
     text = text.strip()
 
     if "```" in text:
-        match = re.search(r"```(?:python)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+        match = re.search(
+            r"```(?:python)?\s*(.*?)```",
+            text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
         if match:
             return match.group(1).strip()
 
     return text
+
+
+def normalize_body_indentation(body: str) -> str:
+    """
+    Normalize model-generated code before placing it inside:
+
+        def answer(df):
+            <body>
+
+    This fixes common LLM outputs like:
+
+        result = ...
+            return result
+
+    while preserving normal nested blocks such as if/else bodies.
+    """
+    body = textwrap.dedent(body).strip()
+    lines = body.splitlines()
+
+    normalized = []
+    previous_ended_with_colon = False
+
+    for line in lines:
+        if not line.strip():
+            normalized.append("")
+            continue
+
+        stripped = line.lstrip()
+
+        starts_top_level = stripped.startswith(
+            (
+                "result",
+                "return ",
+                "#",
+            )
+        )
+
+        looks_like_assignment = (
+            "=" in stripped
+            and not stripped.startswith(
+                (
+                    "if ",
+                    "elif ",
+                    "else:",
+                    "for ",
+                    "while ",
+                    "try:",
+                    "except ",
+                    "with ",
+                    "return ",
+                    "#",
+                )
+            )
+        )
+
+        # If the previous line opened a block, preserve indentation for this line.
+        if previous_ended_with_colon:
+            normalized.append("    " + stripped)
+        elif starts_top_level or looks_like_assignment:
+            normalized.append(stripped)
+        else:
+            normalized.append(stripped)
+
+        previous_ended_with_colon = stripped.endswith(":")
+
+    return "\n".join(normalized).strip()
 
 
 def extract_answer_body(text: str) -> str:
@@ -52,32 +122,25 @@ def extract_answer_body(text: str) -> str:
                 continue
 
             if inside:
-                # Keep blank lines
                 if line.strip() == "":
                     body_lines.append(line)
                     continue
 
-                # Stop at next top-level code block
                 if not line.startswith((" ", "\t")):
                     break
 
                 body_lines.append(line)
 
-        body = textwrap.dedent("\n".join(body_lines)).strip()
+        body = "\n".join(body_lines).strip()
 
     # Case 2: model returned bare code
     else:
         body = text.strip()
 
-    # If body has no return statement, assume it created `result`.
     if "return " not in body:
         body = body + "\nreturn result"
 
-        # Normalize indentation before adding our own indentation.
-        # This prevents cases like:
-        #     result = ...
-        #         return result
-    body = textwrap.dedent(body).strip()
+    body = normalize_body_indentation(body)
 
     if not body:
         raise ValueError("No executable answer body found.")
