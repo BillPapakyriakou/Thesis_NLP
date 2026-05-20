@@ -51,7 +51,7 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    qa = load_qa(name="semeval", split="dev", limit=args.limit)
+    qa = load_qa(name="semeval", split="test", limit=args.limit)
     llm = OllamaClient(model=args.model)
 
     predictions = []
