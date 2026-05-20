@@ -18,6 +18,8 @@ def main():
     parser.add_argument("--lite", action="store_true")
     parser.add_argument("--output-dir", default="results/smoke_test")
     parser.add_argument("--max-retries", type=int, default=2)
+    parser.add_argument("--schema-mode",choices=["none", "hint"],default="none",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -31,7 +33,11 @@ def main():
 
     for row in qa:
         df = load_table(row["dataset"], lite=args.lite)
-        prompt = make_baseline_prompt(row, df)
+        prompt = make_baseline_prompt(
+            row=row,
+            df=df,
+            schema_mode=args.schema_mode,
+        )
 
         raw = llm.generate(prompt)
         attempts = []
@@ -139,6 +145,7 @@ def main():
         "evaluation_error": eval_error,
         "limit": args.limit,
         "lite": args.lite,
+        "schema_mode": args.schema_mode,
         "total_examples": len(logs),
         "execution_success": num_success,
         "execution_failed": num_failed,

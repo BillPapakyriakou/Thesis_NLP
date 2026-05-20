@@ -1,6 +1,17 @@
-def make_baseline_prompt(row: dict, df) -> str:
+from diploma_tqa.schema.schema_linker import make_schema_hint
+
+def make_baseline_prompt(row: dict, df, schema_mode: str = "none") -> str:
     question = row["question"]
     answer_type = row.get("type", "unknown")
+
+    schema_hint = ""
+
+    if schema_mode == "hint":
+        schema_hint = f"""
+
+    Schema hint:
+    {make_schema_hint(question, list(df.columns))}
+    """
 
     return f"""
 You are a Python pandas assistant. Your task is to answer a question about a dataframe.
@@ -34,6 +45,7 @@ Important rules:
 
 DataFrame columns:
 {list(df.columns)}
+{schema_hint}
 
 Column dtypes:
 {df.dtypes.astype(str).to_dict()}
