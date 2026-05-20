@@ -3,23 +3,48 @@ import json
 from pathlib import Path
 
 from databench_eval import Evaluator
+
 from diploma_tqa.data.databench_loader import load_qa, load_table
 from diploma_tqa.llms.ollama_client import OllamaClient
 from diploma_tqa.prompts.baseline_prompts import make_baseline_prompt
+from diploma_tqa.prompts.error_fix_prompts import make_error_fix_prompt
 from diploma_tqa.execution.code_extract import extract_answer_body
 from diploma_tqa.execution.pandas_executor import execute_answer_body
-from diploma_tqa.prompts.error_fix_prompts import make_error_fix_prompt
+
+from diploma_tqa.tools.dataframe_tools import find_columns
+from diploma_tqa.tools.tool_prompts import make_tool_planning_prompt
+from diploma_tqa.tools.tool_runner import parse_tool_calls, execute_tool_calls
+
+
+def is_execution_error(pred) -> bool:
+    return isinstance(pred, str) and (
+        pred.startswith("__CODE_ERROR__")
+        or pred.startswith("__TIMEOUT__")
+    )
 
 
 def main():
     parser = argparse.ArgumentParser()
+
     parser.add_argument("--model", default="qwen2.5-coder:1.5b")
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--lite", action="store_true")
     parser.add_argument("--output-dir", default="results/smoke_test")
-    parser.add_argument("--max-retries", type=int, default=2)
-    parser.add_argument("--schema-mode",choices=["none", "hint"],default="none",
+
+    parser.add_argument("--max-retries", type=int, default=0)
+
+    parser.add_argument(
+        "--schema-mode",
+        choices=["none", "hint"],
+        default="none",
     )
+
+    parser.add_argument(
+        "--tool-mode",
+        choices=["none", "auto-schema", "inspect"],
+        default="none",
+    )
+
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -33,10 +58,56 @@ def main():
 
     for row in qa:
         df = load_table(row["dataset"], lite=args.lite)
+
+        tool_raw = None
+        tool_calls = []
+        tool_observations = ""
+
+        # ------------------------------------------------------------
+        # Optional tool stage
+        # ------------------------------------------------------------
+        if args.tool_mode == "auto-schema":
+            try:
+                tool_observations = find_columns(
+                    df=df,
+                    query=row["question"],
+                    top_k=8,
+                )
+                tool_calls = [
+                    {
+                        "name": "find_columns",
+                        "args": {
+                            "query": row["question"],
+                            "top_k": 8,
+                        },
+                    }
+                ]
+            except Exception as e:
+                tool_observations = f"Tool error: {e}"
+
+        elif args.tool_mode == "inspect":
+            try:
+                tool_prompt = make_tool_planning_prompt(
+                    row=row,
+                    df=df,
+                    max_tool_calls=2,
+                )
+
+                tool_raw = llm.generate(tool_prompt)
+                tool_calls = parse_tool_calls(tool_raw, max_tool_calls=2)
+                tool_observations = execute_tool_calls(tool_calls, df)
+
+            except Exception as e:
+                tool_observations = f"Tool planning failed: {e}"
+
+        # ------------------------------------------------------------
+        # Initial code generation
+        # ------------------------------------------------------------
         prompt = make_baseline_prompt(
             row=row,
             df=df,
             schema_mode=args.schema_mode,
+            tool_observations=tool_observations,
         )
 
         raw = llm.generate(prompt)
@@ -46,22 +117,21 @@ def main():
             code = extract_answer_body(raw)
             pred = execute_answer_body(code, df)
 
-            attempts.append({
-                "stage": "initial",
-                "raw_response": raw,
-                "code": code,
-                "prediction": pred,
-            })
+            attempts.append(
+                {
+                    "stage": "initial",
+                    "raw_response": raw,
+                    "code": code,
+                    "prediction": pred,
+                }
+            )
 
+            # --------------------------------------------------------
+            # Optional error-fixing loop
+            # --------------------------------------------------------
             retry_count = 0
 
-            while (
-                    retry_count < args.max_retries
-                    and (
-                            str(pred).startswith("__CODE_ERROR__")
-                            or str(pred).startswith("__TIMEOUT__")
-                    )
-            ):
+            while retry_count < args.max_retries and is_execution_error(pred):
                 retry_count += 1
 
                 fix_prompt = make_error_fix_prompt(
@@ -75,17 +145,19 @@ def main():
                 fixed_code = extract_answer_body(fixed_raw)
                 fixed_pred = execute_answer_body(fixed_code, df)
 
-                attempts.append({
-                    "stage": f"fix_{retry_count}",
-                    "raw_response": fixed_raw,
-                    "code": fixed_code,
-                    "prediction": fixed_pred,
-                })
+                attempts.append(
+                    {
+                        "stage": f"fix_{retry_count}",
+                        "raw_response": fixed_raw,
+                        "code": fixed_code,
+                        "prediction": fixed_pred,
+                    }
+                )
 
                 code = fixed_code
                 pred = fixed_pred
 
-            if str(pred).startswith("__CODE_ERROR__") or str(pred).startswith("__TIMEOUT__"):
+            if is_execution_error(pred):
                 success = False
                 error = str(pred)
             else:
@@ -98,28 +170,43 @@ def main():
             error = str(e)
             success = False
 
-            attempts.append({
-                "stage": "exception",
-                "raw_response": raw,
-                "code": None,
-                "prediction": pred,
-                "error": error,
-            })
+            attempts.append(
+                {
+                    "stage": "exception",
+                    "raw_response": raw,
+                    "code": None,
+                    "prediction": pred,
+                    "error": error,
+                }
+            )
 
         predictions.append(pred)
-        logs.append({
-            "dataset": row["dataset"],
-            "question": row["question"],
-            "type": row.get("type"),
-            "raw_response": raw,
-            "extracted_code": code,
-            "prediction": pred,
-            "success": success,
-            "error": error,
-            "num_attempts": len(attempts),
-            "attempts": attempts,
-        })
 
+        logs.append(
+            {
+                "dataset": row["dataset"],
+                "question": row["question"],
+                "type": row.get("type"),
+
+                "schema_mode": args.schema_mode,
+                "tool_mode": args.tool_mode,
+                "tool_raw": tool_raw,
+                "tool_calls": tool_calls,
+                "tool_observations": tool_observations,
+
+                "raw_response": raw,
+                "extracted_code": code,
+                "prediction": pred,
+                "success": success,
+                "error": error,
+                "num_attempts": len(attempts),
+                "attempts": attempts,
+            }
+        )
+
+    # ------------------------------------------------------------
+    # Save logs and predictions
+    # ------------------------------------------------------------
     with open(output_dir / "logs.jsonl", "w", encoding="utf-8") as f:
         for item in logs:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
@@ -128,10 +215,27 @@ def main():
         for pred in predictions:
             f.write(str(pred).replace("\n", " ") + "\n")
 
+    # ------------------------------------------------------------
+    # Execution stats
+    # ------------------------------------------------------------
     num_success = sum(1 for item in logs if item["success"])
     num_failed = len(logs) - num_success
     num_retried = sum(1 for item in logs if item.get("num_attempts", 1) > 1)
 
+    attempt_counts = {}
+    for item in logs:
+        n = item.get("num_attempts", 1)
+        attempt_counts[str(n)] = attempt_counts.get(str(n), 0) + 1
+
+    total_model_calls = sum(item.get("num_attempts", 1) for item in logs)
+
+    if args.tool_mode == "inspect":
+        # One extra LLM call per example for tool planning.
+        total_model_calls += len(logs)
+
+    # ------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------
     try:
         evaluator = Evaluator(qa=qa)
         acc = evaluator.eval(predictions, lite=args.lite)
@@ -143,14 +247,26 @@ def main():
     metrics = {
         "accuracy": acc,
         "evaluation_error": eval_error,
+
+        "model": args.model,
         "limit": args.limit,
         "lite": args.lite,
+
         "schema_mode": args.schema_mode,
+        "tool_mode": args.tool_mode,
+
+        "max_retries": args.max_retries,
+        "error_fixing_enabled": args.max_retries > 0,
+
         "total_examples": len(logs),
         "execution_success": num_success,
         "execution_failed": num_failed,
         "execution_success_rate": num_success / len(logs) if logs else 0,
+
         "retried_examples": num_retried,
+        "attempt_counts": attempt_counts,
+        "total_model_calls_estimate": total_model_calls,
+        "avg_model_calls_per_example": total_model_calls / len(logs) if logs else 0,
     }
 
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:
@@ -159,6 +275,9 @@ def main():
     print(f"Accuracy: {acc}")
     print(f"Execution success: {num_success}/{len(logs)}")
     print(f"Retried examples: {num_retried}")
+    print(f"Schema mode: {args.schema_mode}")
+    print(f"Tool mode: {args.tool_mode}")
+    print(f"Max retries: {args.max_retries}")
     print(f"Saved to {output_dir}")
 
 

@@ -1,6 +1,6 @@
 from diploma_tqa.schema.schema_linker import make_schema_hint
 
-def make_baseline_prompt(row: dict, df, schema_mode: str = "none") -> str:
+def make_baseline_prompt(row: dict, df, schema_mode: str = "none", tool_observations: str = "",) -> str:
     question = row["question"]
     answer_type = row.get("type", "unknown")
 
@@ -11,6 +11,15 @@ def make_baseline_prompt(row: dict, df, schema_mode: str = "none") -> str:
 
     Schema hint:
     {make_schema_hint(question, list(df.columns))}
+    """
+
+    tool_section = ""
+
+    if tool_observations:
+        tool_section = f"""
+
+    Tool observations:
+    {tool_observations}
     """
 
     return f"""
@@ -42,10 +51,12 @@ Important rules:
 - If a top entity has an empty or missing name/value, skip it and use the next valid one.
 - Do not return a Series, DataFrame, tuple, or dictionary unless the expected answer type explicitly requires a list.
 - Stop immediately after the return statement.
+- Use tool observations when they identify exact column names or useful column values.
 
 DataFrame columns:
 {list(df.columns)}
 {schema_hint}
+{tool_section}
 
 Column dtypes:
 {df.dtypes.astype(str).to_dict()}
