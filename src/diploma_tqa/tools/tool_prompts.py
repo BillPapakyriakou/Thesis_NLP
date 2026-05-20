@@ -27,6 +27,17 @@ Available tools:
    - The column argument must be an exact column name from Available columns.
    - Example: {{"name": "profile_column", "args": {{"column": "author_name"}}}}
 
+Tool-use strategy:
+- If you are unsure about an exact column name, use find_columns first.
+- Use profile_column only with an exact column name from Available columns.
+- Do not profile a guessed column name.
+- If using two tool calls, prefer this pattern:
+  1. find_columns(query)
+  2. profile_column(exact_column_from_available_columns)
+- If the needed exact columns are already obvious from Available columns, return {{"tool_calls": []}}.
+- Do not use tools for simple max/min/sum/mean/count/nunique questions over clearly named columns.
+- Do not use tools just because tools are available.
+
 Rules:
 - Return valid JSON only.
 - Do not write markdown.
