@@ -49,7 +49,7 @@ def find_columns(df: pd.DataFrame, query: str, top_k: int = 5) -> str:
     return "\n".join(lines)
 
 
-def profile_column(df: pd.DataFrame, column: str, max_values: int = 5) -> str:
+def profile_column(df: pd.DataFrame, column: str, max_values: int = 8) -> str:
     if column not in df.columns:
         return f"profile_column({column!r}) error: column does not exist."
 
