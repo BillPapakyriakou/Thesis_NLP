@@ -1,5 +1,7 @@
 import argparse
 import json
+import numpy as np
+import pandas as pd
 from pathlib import Path
 
 from tqdm import tqdm
@@ -16,6 +18,34 @@ from diploma_tqa.tools.dataframe_tools import find_columns
 from diploma_tqa.tools.tool_prompts import make_tool_planning_prompt
 from diploma_tqa.tools.tool_runner import parse_tool_calls, execute_tool_calls
 
+
+
+def make_json_safe(obj):
+    if isinstance(obj, dict):
+        return {str(k): make_json_safe(v) for k, v in obj.items()}
+
+    if isinstance(obj, list):
+        return [make_json_safe(v) for v in obj]
+
+    if isinstance(obj, tuple):
+        return [make_json_safe(v) for v in obj]
+
+    if isinstance(obj, np.integer):
+        return int(obj)
+
+    if isinstance(obj, np.floating):
+        return float(obj)
+
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+
+    if isinstance(obj, pd.Series):
+        return make_json_safe(obj.tolist())
+
+    if isinstance(obj, pd.DataFrame):
+        return make_json_safe(obj.to_dict(orient="records"))
+
+    return obj
 
 def is_execution_error(pred) -> bool:
     return isinstance(pred, str) and (
@@ -191,6 +221,7 @@ def main():
                 }
             )
 
+        pred = make_json_safe(pred)
         predictions.append(pred)
 
         log_item = {
@@ -234,7 +265,7 @@ def main():
     # ------------------------------------------------------------
     with open(output_dir / "logs.jsonl", "w", encoding="utf-8") as f:
         for item in logs:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+            f.write(json.dumps(make_json_safe(item), ensure_ascii=False) + "\n")
 
     with open(output_dir / "predictions.txt", "w", encoding="utf-8") as f:
         for pred in predictions:
@@ -295,7 +326,7 @@ def main():
     }
 
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(make_json_safe(metrics), f, indent=2)
 
     print(f"Accuracy: {acc}")
     print(f"Execution success: {num_success}/{len(logs)}")
