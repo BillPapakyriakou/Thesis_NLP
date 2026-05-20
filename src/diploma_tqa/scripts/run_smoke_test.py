@@ -28,7 +28,7 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model", default="qwen2.5-coder:1.5b")
-    parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--lite", action="store_true")
     parser.add_argument("--output-dir", default="results/smoke_test")
 
