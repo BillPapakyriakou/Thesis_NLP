@@ -32,19 +32,14 @@ Fix the code.
 
 Rules:
 - Use only the dataframe df.
-- Use only exact column names from the available columns list.
-- If the failed code uses a column that is not in the available columns, replace it with the closest exact available column.
-- Do not reuse a failed column name unless it appears exactly in the available columns list.
+- Use only the exact column names listed above.
 - Do not invent or simplify column names.
-- Pay attention to annotated column names such as <gx:number>, <gx:category>, and <gx:list[category]>.
 - If a column name contains suffixes like <gx:number> or <gx:category>, use the full exact column name.
-- If selecting the row with the highest/lowest value in one column and returning another column, use df.loc[df[column].idxmax(), target_column] or df.loc[df[column].idxmin(), target_column].
-- Do not call nlargest/nsmallest on a text/category Series with another column name. Use DataFrame.nlargest(n, column) or idxmax/idxmin instead.
 - Return exactly one value of the expected answer type.
 - Do not write imports.
 - Do not use markdown.
 - Do not repeat def answer(df).
-- Output code without leading indentation. The system will indent it automatically.
+- Output only the indented body of the function.
 - Stop immediately after the return statement.
 
 def answer(df):
