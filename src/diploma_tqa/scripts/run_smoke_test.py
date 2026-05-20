@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+from tqdm import tqdm
 from databench_eval import Evaluator
 
 from diploma_tqa.data.databench_loader import load_qa, load_table
@@ -56,7 +57,17 @@ def main():
     predictions = []
     logs = []
 
-    for row in qa:
+    running_success = 0
+    running_retried = 0
+
+    progress = tqdm(
+        qa,
+        total=len(qa),
+        desc="Running examples",
+        dynamic_ncols=True,
+    )
+
+    for i, row in enumerate(progress, start=1):
         df = load_table(row["dataset"], lite=args.lite)
 
         tool_raw = None
@@ -182,25 +193,39 @@ def main():
 
         predictions.append(pred)
 
-        logs.append(
+        log_item = {
+            "dataset": row["dataset"],
+            "question": row["question"],
+            "type": row.get("type"),
+
+            "schema_mode": args.schema_mode,
+            "tool_mode": args.tool_mode,
+            "tool_raw": tool_raw,
+            "tool_calls": tool_calls,
+            "tool_observations": tool_observations,
+
+            "raw_response": raw,
+            "extracted_code": code,
+            "prediction": pred,
+            "success": success,
+            "error": error,
+            "num_attempts": len(attempts),
+            "attempts": attempts,
+        }
+
+        logs.append(log_item)
+
+        if success:
+            running_success += 1
+
+        if len(attempts) > 1:
+            running_retried += 1
+
+        progress.set_postfix(
             {
+                "success": f"{running_success}/{i}",
+                "retried": running_retried,
                 "dataset": row["dataset"],
-                "question": row["question"],
-                "type": row.get("type"),
-
-                "schema_mode": args.schema_mode,
-                "tool_mode": args.tool_mode,
-                "tool_raw": tool_raw,
-                "tool_calls": tool_calls,
-                "tool_observations": tool_observations,
-
-                "raw_response": raw,
-                "extracted_code": code,
-                "prediction": pred,
-                "success": success,
-                "error": error,
-                "num_attempts": len(attempts),
-                "attempts": attempts,
             }
         )
 
