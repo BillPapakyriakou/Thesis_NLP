@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import ast
 
 
 def execute_answer_body(body: str, df: pd.DataFrame, timeout: int = 30):
@@ -13,6 +14,7 @@ def execute_answer_body(body: str, df: pd.DataFrame, timeout: int = 30):
         namespace = {
             "pd": pd,
             "np": np,
+            "ast": ast,
             "df": df,
         }
 

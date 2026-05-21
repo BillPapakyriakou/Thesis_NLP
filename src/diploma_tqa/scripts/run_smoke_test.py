@@ -180,6 +180,7 @@ def main():
                     df=df,
                     previous_code=code,
                     error=str(pred),
+                    tool_observations=tool_observations,
                 )
 
                 fixed_raw = llm.generate(fix_prompt)
