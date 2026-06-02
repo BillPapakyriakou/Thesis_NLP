@@ -3,6 +3,8 @@ import textwrap
 
 
 def strip_code_fences(text: str) -> str:
+
+    # Remove markdown code fences from the model response (extracts code from python blocks)
     text = text.strip()
 
     if "```" in text:
@@ -98,7 +100,7 @@ def extract_answer_body(text: str) -> str:
     """
     text = strip_code_fences(text)
 
-    # Remove imports; executor provides pd/np already.
+    # Remove imports; executor provides helper libraries already.
     lines = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -110,7 +112,7 @@ def extract_answer_body(text: str) -> str:
 
     text = "\n".join(lines).strip()
 
-    # Case 1: model returned full function
+    # Case 1: model returned full answer(df) function
     if "def answer" in text:
         lines = text.splitlines()
         body_lines = []
@@ -126,6 +128,7 @@ def extract_answer_body(text: str) -> str:
                     body_lines.append(line)
                     continue
 
+                # Stop when the model response leaves the function body
                 if not line.startswith((" ", "\t")):
                     break
 
@@ -137,6 +140,7 @@ def extract_answer_body(text: str) -> str:
     else:
         body = text.strip()
 
+    # ensure code returns a value
     if "return " not in body:
         body = body + "\nreturn result"
 
@@ -145,4 +149,5 @@ def extract_answer_body(text: str) -> str:
     if not body:
         raise ValueError("No executable answer body found.")
 
+    # Executor expects the body to be inside def answer(df)
     return textwrap.indent(body, "    ")

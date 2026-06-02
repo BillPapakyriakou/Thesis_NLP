@@ -1,4 +1,7 @@
 def make_tool_planning_prompt(row: dict, df, max_tool_calls: int = 2) -> str:
+
+    # Build prompt that asks the model whether it wants to use available tools for better dataframe inspection
+
     question = row["question"]
     answer_type = row.get("type", "unknown")
 

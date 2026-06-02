@@ -6,6 +6,8 @@ def make_error_fix_prompt(
     tool_observations: str = "",
 ) -> str:
 
+    # Builds the error fixing prompt for a table-question example.
+
     question = row["question"]
     answer_type = row.get("type", "unknown")
 

@@ -1,6 +1,9 @@
 from diploma_tqa.schema.schema_linker import make_schema_hint
 
 def make_baseline_prompt(row: dict, df, schema_mode: str = "none", tool_observations: str = "",) -> str:
+
+    # Builds the main code-generation prompt for a table-question example.
+
     question = row["question"]
     answer_type = row.get("type", "unknown")
 

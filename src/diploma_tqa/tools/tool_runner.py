@@ -5,6 +5,8 @@ from diploma_tqa.tools.dataframe_tools import find_columns, profile_column
 
 
 def extract_json_object(text: str) -> dict:
+    # Extract json object from model response - model should return json,
+    # but may output it in markdown code fences
     text = text.strip()
 
     if "```" in text:
@@ -15,6 +17,7 @@ def extract_json_object(text: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
+        # if response contains extra data, try to find the json part
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if match:
             return json.loads(match.group(0))
@@ -23,6 +26,8 @@ def extract_json_object(text: str) -> dict:
 
 
 def parse_tool_calls(raw: str, max_tool_calls: int = 2) -> list[dict]:
+    # this reads the models json response and extracts only valid tool calls
+
     data = extract_json_object(raw)
     calls = data.get("tool_calls", [])
 
@@ -37,6 +42,8 @@ def parse_tool_calls(raw: str, max_tool_calls: int = 2) -> list[dict]:
         name = call.get("name")
         args = call.get("args", {})
 
+        # only allow known tools with valid dictionary arguments
+        # Example: {{"name": "profile_column", "args": {{"column": "author_name"}}}}
         if name in {"find_columns", "profile_column"} and isinstance(args, dict):
             valid.append({"name": name, "args": args})
 
@@ -44,6 +51,8 @@ def parse_tool_calls(raw: str, max_tool_calls: int = 2) -> list[dict]:
 
 
 def execute_tool_calls(tool_calls: list[dict], df) -> str:
+    # runs the requested tool calls and returns the output as text
+
     observations = []
 
     for idx, call in enumerate(tool_calls, start=1):
@@ -67,6 +76,7 @@ def execute_tool_calls(tool_calls: list[dict], df) -> str:
         except Exception as e:
             result = f"Tool error for {name}: {e}"
 
+        # Keeps tool observation
         observations.append(f"Tool observation {idx}:\n{result}")
 
     if not observations:

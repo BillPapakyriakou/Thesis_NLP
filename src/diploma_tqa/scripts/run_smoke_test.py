@@ -21,6 +21,9 @@ from diploma_tqa.tools.tool_runner import parse_tool_calls, execute_tool_calls
 
 
 def make_json_safe(obj):
+
+    # convert numpy/pandas objects into Python objects
+
     if isinstance(obj, dict):
         return {str(k): make_json_safe(v) for k, v in obj.items()}
 
@@ -48,6 +51,7 @@ def make_json_safe(obj):
     return obj
 
 def is_execution_error(pred) -> bool:
+    # check whether model prediction is an error
     return isinstance(pred, str) and (
         pred.startswith("__CODE_ERROR__")
         or pred.startswith("__TIMEOUT__")
@@ -57,19 +61,23 @@ def is_execution_error(pred) -> bool:
 def main():
     parser = argparse.ArgumentParser()
 
+    # Default settings
     parser.add_argument("--model", default="qwen2.5-coder:1.5b")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--lite", action="store_true")
     parser.add_argument("--output-dir", default="results/smoke_test")
 
+    # max execution retries
     parser.add_argument("--max-retries", type=int, default=0)
 
+    # optional schema-hint mode
     parser.add_argument(
         "--schema-mode",
         choices=["none", "hint"],
         default="none",
     )
 
+    # optional tool usage mode (modes: auto-schema, inspect)
     parser.add_argument(
         "--tool-mode",
         choices=["none", "auto-schema", "inspect"],
@@ -104,10 +112,9 @@ def main():
         tool_calls = []
         tool_observations = ""
 
-        # ------------------------------------------------------------
-        # Optional tool stage
-        # ------------------------------------------------------------
+        # optional tool stage
         if args.tool_mode == "auto-schema":
+            # search for relevant columns using the question - automatically
             try:
                 tool_observations = find_columns(
                     df=df,
@@ -127,6 +134,7 @@ def main():
                 tool_observations = f"Tool error: {e}"
 
         elif args.tool_mode == "inspect":
+            # ask the model if it wants to use any of the tools
             try:
                 tool_prompt = make_tool_planning_prompt(
                     row=row,
@@ -141,9 +149,7 @@ def main():
             except Exception as e:
                 tool_observations = f"Tool planning failed: {e}"
 
-        # ------------------------------------------------------------
-        # Initial code generation
-        # ------------------------------------------------------------
+        # initial code generation and main prompt creation
         prompt = make_baseline_prompt(
             row=row,
             df=df,
@@ -155,6 +161,7 @@ def main():
         attempts = []
 
         try:
+            # extract code from prediction and execute it
             code = extract_answer_body(raw)
             pred = execute_answer_body(code, df)
 
@@ -167,9 +174,7 @@ def main():
                 }
             )
 
-            # --------------------------------------------------------
-            # Optional error-fixing loop
-            # --------------------------------------------------------
+            # error fixing loop
             retry_count = 0
 
             while retry_count < args.max_retries and is_execution_error(pred):
@@ -180,7 +185,7 @@ def main():
                     df=df,
                     previous_code=code,
                     error=str(pred),
-                    #tool_observations=tool_observations,
+                    #tool_observations=tool_observations,  # with 8B model: adds noise - keep for use with larger models
                 )
 
                 fixed_raw = llm.generate(fix_prompt)
@@ -221,7 +226,7 @@ def main():
                     "error": error,
                 }
             )
-
+        # stores prediction and detailed log for every example
         pred = make_json_safe(pred)
         predictions.append(pred)
 
@@ -261,9 +266,7 @@ def main():
             }
         )
 
-    # ------------------------------------------------------------
-    # Save logs and predictions
-    # ------------------------------------------------------------
+    # save logs and prediction list
     with open(output_dir / "logs.jsonl", "w", encoding="utf-8") as f:
         for item in logs:
             f.write(json.dumps(make_json_safe(item), ensure_ascii=False) + "\n")
@@ -272,9 +275,7 @@ def main():
         for pred in predictions:
             f.write(str(pred).replace("\n", " ") + "\n")
 
-    # ------------------------------------------------------------
-    # Execution stats
-    # ------------------------------------------------------------
+    # compute execution stats
     num_success = sum(1 for item in logs if item["success"])
     num_failed = len(logs) - num_success
     num_retried = sum(1 for item in logs if item.get("num_attempts", 1) > 1)
@@ -284,15 +285,14 @@ def main():
         n = item.get("num_attempts", 1)
         attempt_counts[str(n)] = attempt_counts.get(str(n), 0) + 1
 
+    # approximates total model calls
     total_model_calls = sum(item.get("num_attempts", 1) for item in logs)
 
     if args.tool_mode == "inspect":
-        # One extra LLM call per example for tool planning.
+        # one extra LLM call per example for tool planning.
         total_model_calls += len(logs)
 
-    # ------------------------------------------------------------
-    # Evaluation
-    # ------------------------------------------------------------
+    # evaluate predictions using the official task evaluator
     try:
         evaluator = Evaluator(qa=qa)
         acc = evaluator.eval(predictions, lite=args.lite)

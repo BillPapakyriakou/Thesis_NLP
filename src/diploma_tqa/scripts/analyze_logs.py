@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 def load_jsonl(path: Path) -> list[dict]:
+    # Loads json file, each line is a json object
     items = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -14,6 +15,7 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def load_metrics(path: Path) -> dict:
+    # Loads metrics.json if it exists
     if not path.exists():
         return {}
     with open(path, "r", encoding="utf-8") as f:
@@ -21,6 +23,7 @@ def load_metrics(path: Path) -> dict:
 
 
 def is_error_prediction(pred) -> bool:
+    # checks if prediction is an execution error
     return isinstance(pred, str) and (
         pred.startswith("__CODE_ERROR__")
         or pred.startswith("__TIMEOUT__")
@@ -28,12 +31,13 @@ def is_error_prediction(pred) -> bool:
 
 
 def short_error(error: str | None) -> str:
+    # makes the error messages shorter and easier to read in the report
     if not error:
         return "None"
 
     error = str(error)
 
-    # Normalize common KeyError-style messages.
+    # Remove the common error prefix before printing
     if error.startswith("__CODE_ERROR__: "):
         error = error.replace("__CODE_ERROR__: ", "", 1)
 
@@ -79,7 +83,7 @@ def main():
     type_failures = Counter(
         item.get("type", "UNKNOWN") for item in logs if not item.get("success")
     )
-
+    # examples that needed at least 1 repair attempt
     retried = [item for item in logs if item.get("num_attempts", 1) > 1]
 
     fixed_by_retry = []
@@ -101,6 +105,7 @@ def main():
         elif initially_failed and not item.get("success"):
             still_failed_after_retry.append(item)
 
+    # count final error messages for examples that still failed
     error_counts = Counter(
         short_error(item.get("error")) for item in logs if not item.get("success")
     )
