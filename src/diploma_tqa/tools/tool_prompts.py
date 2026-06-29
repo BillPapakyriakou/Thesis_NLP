@@ -31,8 +31,10 @@ Available tools:
    - Example: {{"name": "profile_column", "args": {{"column": "author_name"}}}}
 
 3. find_values(column, query)
-   - Use this to find values inside a column that are similar to an entity or phrase from the question.
-   - The column argument must be an exact column name from Available columns.
+   - Use only to match a concrete value/entity from the question to cell values in a known column.
+   - Good for quoted titles, names, countries, cities, organizations, products, or specific phrases.
+   - Do not use for abstract concepts or operations like year, date, rating, count, average, maximum, amount, contract, procurement, or category.
+   - The column must be an exact column name from Available columns.
    - Example: {{"name": "find_values", "args": {{"column": "title", "query": "value with a view"}}}}
 
 Rules:
