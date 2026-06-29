@@ -193,6 +193,8 @@ def main():
                         max_tool_calls=REACT_MAX_TOOL_CALLS,
                     )
 
+                    thought = plan.get("thought", "")
+
                     step_calls = plan.get("tool_calls", [])
 
                     # Remove repeated calls within the same example.
@@ -209,6 +211,7 @@ def main():
                         react_steps.append(
                             {
                                 "step": step,
+                                "thought": thought,
                                 "raw_response": raw_plan,
                                 "tool_calls": [],
                                 "observation": "",
@@ -227,6 +230,7 @@ def main():
                     react_steps.append(
                         {
                             "step": step,
+                            "thought": thought,
                             "raw_response": raw_plan,
                             "tool_calls": step_calls,
                             "observation": observation,

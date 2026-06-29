@@ -50,11 +50,19 @@ def parse_tool_calls(raw: str, max_tool_calls: int = 3) -> list[dict]:
     return valid
 
 def parse_react_plan(raw: str, max_tool_calls: int = 3) -> dict:
-    # this reads the models json response and extracts only valid tool calls
     obj = extract_json_object(raw)
 
     if not isinstance(obj, dict):
-        return {"tool_calls": [], "stop": True, "parse_error": "Invalid JSON object"}
+        return {
+            "thought": "",
+            "tool_calls": [],
+            "stop": True,
+            "parse_error": "Invalid JSON object",
+        }
+
+    thought = obj.get("thought", "")
+    if not isinstance(thought, str):
+        thought = ""
 
     stop = bool(obj.get("stop", False))
     calls = obj.get("tool_calls", [])
@@ -75,6 +83,7 @@ def parse_react_plan(raw: str, max_tool_calls: int = 3) -> dict:
                 break
 
     return {
+        "thought": thought,
         "tool_calls": valid_calls,
         "stop": stop or len(valid_calls) == 0,
         "parse_error": None,
