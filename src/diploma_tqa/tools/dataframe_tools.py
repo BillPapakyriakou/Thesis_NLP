@@ -97,3 +97,64 @@ def profile_column(df: pd.DataFrame, column: str, max_values: int = 8) -> str:
             pass
 
     return "\n".join(lines)
+
+def find_values(
+    df: pd.DataFrame,
+    column: str,
+    query: str,
+    top_k: int = 5,
+    min_score: float = 0.65,
+) -> str:
+
+    # searches inside a dataframe column for values similar to the query -
+    # helps when question mentions an entity/value and the model needs
+    # to find the closest matching value in the table
+
+    if column not in df.columns:
+        return f"find_values({column!r}, {query!r}) error: column does not exist."
+
+    query_norm = normalize_text(query)
+
+    if not query_norm:
+        return f"find_values({column!r}, {query!r}) error: empty query."
+
+    series = df[column].dropna()
+
+    scored = []
+
+    for idx, value in series.items():
+        value_str = str(value)
+        value_norm = normalize_text(value_str)
+
+        score = 0.0
+
+        # strong signal: exact substring match.
+        if query_norm and query_norm in value_norm:
+            score += 3.0
+
+        if value_norm and value_norm in query_norm:
+            score += 2.0
+
+        # medium signal: shared words.
+        query_tokens = set(query_norm.split())
+        value_tokens = set(value_norm.split())
+        score += 1.5 * len(query_tokens & value_tokens)
+
+        # weak signal: fuzzy string similarity.
+        score += similarity(query_norm, value_norm)
+
+        if score >= min_score:
+            scored.append((score, idx, value_str))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    lines = [f"find_values(column={column!r}, query={query!r}) results:"]
+
+    if not scored:
+        lines.append("- No high-confidence value matches found.")
+        return "\n".join(lines)
+
+    for score, idx, value in scored[:top_k]:
+        lines.append(f"- row {idx}: {value!r} (score={score:.2f})")
+
+    return "\n".join(lines)

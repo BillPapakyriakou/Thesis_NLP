@@ -1,7 +1,7 @@
 import json
 import re
 
-from diploma_tqa.tools.dataframe_tools import find_columns, profile_column
+from diploma_tqa.tools.dataframe_tools import find_columns, profile_column, find_values
 
 
 def extract_json_object(text: str) -> dict:
@@ -25,7 +25,7 @@ def extract_json_object(text: str) -> dict:
     raise ValueError(f"Could not parse tool JSON: {text[:300]}")
 
 
-def parse_tool_calls(raw: str, max_tool_calls: int = 2) -> list[dict]:
+def parse_tool_calls(raw: str, max_tool_calls: int = 3) -> list[dict]:
     # this reads the models json response and extracts only valid tool calls
 
     data = extract_json_object(raw)
@@ -44,7 +44,7 @@ def parse_tool_calls(raw: str, max_tool_calls: int = 2) -> list[dict]:
 
         # only allow known tools with valid dictionary arguments
         # Example: {{"name": "profile_column", "args": {{"column": "author_name"}}}}
-        if name in {"find_columns", "profile_column"} and isinstance(args, dict):
+        if name in {"find_columns", "profile_column", "find_values"} and isinstance(args, dict):
             valid.append({"name": name, "args": args})
 
     return valid
@@ -70,6 +70,14 @@ def execute_tool_calls(tool_calls: list[dict], df) -> str:
                 result = profile_column(
                     df=df,
                     column=str(args.get("column", "")),
+                )
+            elif name == "find_values":
+                result = find_values(
+                    df=df,
+                    column=str(args.get("column", "")),
+                    query=str(args.get("query", "")),
+                    top_k=int(args.get("top_k", 5)),
+                    min_score=float(args.get("min_score", 0.65)),
                 )
             else:
                 result = f"Unknown tool: {name}"

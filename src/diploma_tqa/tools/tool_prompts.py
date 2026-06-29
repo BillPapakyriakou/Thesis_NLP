@@ -30,6 +30,10 @@ Available tools:
    - The column argument must be an exact column name from Available columns.
    - Example: {{"name": "profile_column", "args": {{"column": "author_name"}}}}
 
+3. find_values(column, query)
+   - Use this to find values inside a column that are similar to an entity or phrase from the question.
+   - The column argument must be an exact column name from Available columns.
+   - Example: {{"name": "find_values", "args": {{"column": "title", "query": "value with a view"}}}}
 
 Rules:
 - Return valid JSON only.
@@ -38,6 +42,8 @@ Rules:
 - If no tool is needed, return {{"tool_calls": []}}.
 - Prefer find_columns when unsure about an exact column name.
 - Prefer profile_column when unsure what values a column contains.
+- Prefer find_values when the question mentions a specific entity, title, name, or phrase that may appear inside a column.
+- Do not call find_values unless you already know the exact column name to search.
 
 Return JSON in this format:
 {{"tool_calls": [{{"name": "find_columns", "args": {{"query": "..."}}}}]}}
