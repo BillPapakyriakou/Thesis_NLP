@@ -49,6 +49,36 @@ def parse_tool_calls(raw: str, max_tool_calls: int = 3) -> list[dict]:
 
     return valid
 
+def parse_react_plan(raw: str, max_tool_calls: int = 3) -> dict:
+    # this reads the models json response and extracts only valid tool calls
+    obj = extract_json_object(raw)
+
+    if not isinstance(obj, dict):
+        return {"tool_calls": [], "stop": True, "parse_error": "Invalid JSON object"}
+
+    stop = bool(obj.get("stop", False))
+    calls = obj.get("tool_calls", [])
+
+    valid_calls = []
+    if isinstance(calls, list):
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+
+            name = call.get("name")
+            args = call.get("args", {})
+
+            if name in {"find_columns", "profile_column", "find_values"} and isinstance(args, dict):
+                valid_calls.append({"name": name, "args": args})
+
+            if len(valid_calls) >= max_tool_calls:
+                break
+
+    return {
+        "tool_calls": valid_calls,
+        "stop": stop or len(valid_calls) == 0,
+        "parse_error": None,
+    }
 
 def execute_tool_calls(tool_calls: list[dict], df) -> str:
     # runs the requested tool calls and returns the output as text

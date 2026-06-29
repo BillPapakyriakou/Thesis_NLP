@@ -15,10 +15,16 @@ from diploma_tqa.execution.code_extract import extract_answer_body
 from diploma_tqa.execution.pandas_executor import execute_answer_body
 
 from diploma_tqa.tools.dataframe_tools import find_columns
-from diploma_tqa.tools.tool_prompts import make_tool_planning_prompt
-from diploma_tqa.tools.tool_runner import parse_tool_calls, execute_tool_calls
+from diploma_tqa.tools.tool_prompts import (
+    make_tool_planning_prompt,
+    make_react_tool_planning_prompt,
+)
 
-
+from diploma_tqa.tools.tool_runner import (
+    parse_tool_calls,
+    parse_react_plan,
+    execute_tool_calls,
+)
 
 def make_json_safe(obj):
 
@@ -57,6 +63,9 @@ def is_execution_error(pred) -> bool:
         or pred.startswith("__TIMEOUT__")
     )
 
+def tool_call_key(call):
+    return json.dumps(call, sort_keys=True, ensure_ascii=False)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -80,11 +89,15 @@ def main():
     # optional tool usage mode (modes: auto-schema, inspect)
     parser.add_argument(
         "--tool-mode",
-        choices=["none", "auto-schema", "inspect"],
+        choices=["none", "auto-schema", "inspect", "react-inspect"],
         default="none",
     )
 
     args = parser.parse_args()
+
+    REACT_MAX_STEPS = 3
+    REACT_MAX_TOOL_CALLS = 3
+    INSPECT_MAX_TOOL_CALLS = 3
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +124,7 @@ def main():
         tool_raw = None
         tool_calls = []
         tool_observations = ""
+        react_steps = []
 
         # optional tool stage
         if args.tool_mode == "auto-schema":
@@ -139,15 +153,99 @@ def main():
                 tool_prompt = make_tool_planning_prompt(
                     row=row,
                     df=df,
-                    max_tool_calls=2,
+                    max_tool_calls=INSPECT_MAX_TOOL_CALLS,
                 )
 
                 tool_raw = llm.generate(tool_prompt)
-                tool_calls = parse_tool_calls(tool_raw, max_tool_calls=2)
+                tool_calls = parse_tool_calls(tool_raw, max_tool_calls=INSPECT_MAX_TOOL_CALLS)
                 tool_observations = execute_tool_calls(tool_calls, df)
 
             except Exception as e:
                 tool_observations = f"Tool planning failed: {e}"
+
+        elif args.tool_mode == "react-inspect":
+            # iterative tool planning: observe -> plan next tool call(s) -> observe again
+            react_steps = []
+            all_tool_calls = []
+            all_observations = []
+            seen_tool_calls = set()
+
+            try:
+                for step in range(1, REACT_MAX_STEPS + 1):
+                    previous_observations = (
+                        "\n\n".join(all_observations)
+                        if all_observations
+                        else ""
+                    )
+
+                    tool_prompt = make_react_tool_planning_prompt(
+                        row=row,
+                        df=df,
+                        previous_observations=previous_observations,
+                        step=step,
+                        max_steps=REACT_MAX_STEPS,
+                        max_tool_calls=REACT_MAX_TOOL_CALLS,
+                    )
+
+                    raw_plan = llm.generate(tool_prompt)
+                    plan = parse_react_plan(
+                        raw_plan,
+                        max_tool_calls=REACT_MAX_TOOL_CALLS,
+                    )
+
+                    step_calls = plan.get("tool_calls", [])
+
+                    # Remove repeated calls within the same example.
+                    new_calls = []
+                    for call in step_calls:
+                        key = tool_call_key(call)
+                        if key not in seen_tool_calls:
+                            seen_tool_calls.add(key)
+                            new_calls.append(call)
+
+                    step_calls = new_calls
+
+                    if not step_calls:
+                        react_steps.append(
+                            {
+                                "step": step,
+                                "raw_response": raw_plan,
+                                "tool_calls": [],
+                                "observation": "",
+                                "stop": True,
+                            }
+                        )
+                        break
+
+                    observation = execute_tool_calls(step_calls, df)
+
+                    all_tool_calls.extend(step_calls)
+                    all_observations.append(
+                        f"Step {step} observations:\n{observation}"
+                    )
+
+                    react_steps.append(
+                        {
+                            "step": step,
+                            "raw_response": raw_plan,
+                            "tool_calls": step_calls,
+                            "observation": observation,
+                            "stop": bool(plan.get("stop", False)),
+                        }
+                    )
+
+                    if plan.get("stop", False):
+                        break
+
+                tool_raw = json.dumps(react_steps, ensure_ascii=False)
+                tool_calls = all_tool_calls
+                tool_observations = "\n\n".join(all_observations)
+
+            except Exception as e:
+                tool_observations = f"ReAct tool planning failed: {e}"
+                tool_raw = None
+                tool_calls = []
+                react_steps = []
 
         # initial code generation and main prompt creation
         prompt = make_baseline_prompt(
@@ -240,6 +338,9 @@ def main():
             "tool_raw": tool_raw,
             "tool_calls": tool_calls,
             "tool_observations": tool_observations,
+            "react_steps": react_steps if args.tool_mode == "react-inspect" else None,
+            "num_react_steps": len(react_steps) if args.tool_mode == "react-inspect" else 0,
+            "num_tool_calls": len(tool_calls),
 
             "raw_response": raw,
             "extracted_code": code,
@@ -292,6 +393,12 @@ def main():
         # one extra LLM call per example for tool planning.
         total_model_calls += len(logs)
 
+    elif args.tool_mode == "react-inspect":
+        total_model_calls += sum(
+            item.get("num_react_steps", 0)
+            for item in logs
+        )
+
     # evaluate predictions using the official task evaluator
     try:
         evaluator = Evaluator(qa=qa)
@@ -319,6 +426,19 @@ def main():
         "execution_success": num_success,
         "execution_failed": num_failed,
         "execution_success_rate": num_success / len(logs) if logs else 0,
+
+        "react_max_steps": REACT_MAX_STEPS if args.tool_mode == "react-inspect" else None,
+        "react_max_tool_calls": REACT_MAX_TOOL_CALLS if args.tool_mode == "react-inspect" else None,
+        "avg_react_steps": (
+            sum(item.get("num_react_steps", 0) for item in logs) / len(logs)
+            if args.tool_mode == "react-inspect" and logs
+            else None
+        ),
+        "avg_tool_calls": (
+            sum(item.get("num_tool_calls", 0) for item in logs) / len(logs)
+            if logs
+            else 0
+        ),
 
         "retried_examples": num_retried,
         "attempt_counts": attempt_counts,

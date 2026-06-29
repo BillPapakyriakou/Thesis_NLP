@@ -8,8 +8,10 @@ def make_tool_planning_prompt(row: dict, df, max_tool_calls: int = 2) -> str:
     return f"""
 You may inspect the dataframe before writing Pandas code.
 
-Your goal is to request useful tool calls that help answer the question.
-Request tools only if they help identify exact column names or understand column values.
+Your goal is to reduce uncertainty before code generation.
+- Request the number of useful tool calls needed, up to {max_tool_calls}.
+- Use multiple tool calls when they answer different uncertainties, such as finding a column and then inspecting or matching values in that column.
+- Return no tool calls only for simple questions where the relevant columns and values are already obvious.
 
 Question:
 {question}
@@ -41,12 +43,82 @@ Rules:
 - Return valid JSON only.
 - Do not write markdown.
 - Request at most {max_tool_calls} tool calls.
-- If no tool is needed, return {{"tool_calls": []}}.
+- Return {{"tool_calls": []}} only when no useful tool call would reduce uncertainty.
 - Prefer find_columns when unsure about an exact column name.
-- Prefer profile_column when unsure what values a column contains.
-- Prefer find_values when the question mentions a specific entity, title, name, or phrase that may appear inside a column.
+- Prefer profile_column when unsure what values a column contains or how values are formatted.
+- Prefer find_values only when the question mentions a concrete entity, title, name, country, city, organization, product, or quoted phrase that may appear as a cell value.
+- Do not use find_values for abstract concepts, operations, or column meanings.
 - Do not call find_values unless you already know the exact column name to search.
 
 Return JSON in this format:
 {{"tool_calls": [{{"name": "find_columns", "args": {{"query": "..."}}}}]}}
+""".strip()
+
+
+def make_react_tool_planning_prompt(row, df, previous_observations="", step=1, max_steps=3, max_tool_calls=3):
+    question = row["question"]
+    answer_type = row.get("type", "")
+
+    cols = list(df.columns)
+    dtypes = {c: str(df[c].dtype) for c in df.columns}
+
+    return f"""
+You may inspect the dataframe before Pandas code generation.
+
+Your goal is to gather only the missing information needed to answer the question.
+Use tools only if they help identify exact column names, understand column values,
+or match concrete entities to cell values.
+
+This is an iterative planning step. Use previous observations to decide whether another tool call is useful.
+If enough information is already available, stop.
+
+Question:
+{question}
+
+Expected answer type:
+{answer_type}
+
+Available columns:
+{cols}
+
+Dtypes:
+{dtypes}
+
+Previous observations:
+{previous_observations if previous_observations else "None"}
+
+Available tools:
+1. find_columns(query)
+   - Use this to find exact dataframe column names.
+   - Example: {{"name": "find_columns", "args": {{"query": "author name"}}}}
+
+2. profile_column(column)
+   - Use this to inspect dtype, sample values, top values, and numeric summary.
+   - The column argument must be an exact column name from Available columns.
+   - Example: {{"name": "profile_column", "args": {{"column": "author_name"}}}}
+
+3. find_values(column, query)
+   - Use only to match a concrete value/entity from the question to cell values in a known column.
+   - Good for quoted titles, names, countries, cities, organizations, products, or specific phrases.
+   - Do not use for abstract concepts or operations like year, date, rating, count, average, maximum, amount, contract, procurement, or category.
+   - The column must be an exact column name from Available columns.
+   - Example: {{"name": "find_values", "args": {{"column": "title", "query": "value with a view"}}}}
+
+Rules:
+- Return valid JSON only.
+- Do not write markdown.
+- Do not answer the question.
+- Do not write code.
+- This is planning step {step} of at most {max_steps}.
+- Request at most {max_tool_calls} tool calls.
+- Use previous observations to avoid repeated or unnecessary calls.
+- Prefer find_columns when unsure about an exact column name.
+- Prefer profile_column when unsure what values a column contains.
+- Prefer find_values only when the question mentions a concrete entity, title, name, or phrase that may appear as a cell value.
+- Do not use find_values for abstract concepts, operations, or column meanings.
+- Do not call find_values unless you already know the exact column name to search.
+- If enough information is available, return {{"tool_calls": [], "stop": true}}.
+- Otherwise return {{"tool_calls": [...], "stop": false}}.
+
+Return JSON:
 """.strip()
