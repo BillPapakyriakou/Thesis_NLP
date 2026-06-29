@@ -49,6 +49,8 @@ Rules:
 - Prefer find_values only when the question mentions a concrete entity, title, name, country, city, organization, product, or quoted phrase that may appear as a cell value.
 - Do not use find_values for abstract concepts, operations, or column meanings.
 - Do not call find_values unless you already know the exact column name to search.
+- If the question asks about most common, least common, maximum, minimum, top-k, average, or distribution of values in a column, use profile_column on the relevant column when available.
+- If the question mentions a quoted phrase, title, name, country, city, organization, or product, use find_values when a likely text/category column is available.
 
 Return JSON in this format:
 {{"tool_calls": [{{"name": "find_columns", "args": {{"query": "..."}}}}]}}
