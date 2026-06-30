@@ -392,7 +392,7 @@ def main():
 
         progress.set_postfix(
             {
-                "success": f"{running_success}/{i}",
+                "success": f"{running_success}/{local_i}",
                 "retried": running_retried,
                 "dataset": row["dataset"],
             }
