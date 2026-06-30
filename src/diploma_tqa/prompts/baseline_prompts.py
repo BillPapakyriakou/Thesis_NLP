@@ -58,6 +58,7 @@ Important rules:
 - Stop immediately after the return statement.
 - Use tool observations when they identify exact column names or useful column values.
 - If a column contains dictionary-like strings such as "{{'key': value}}", parse them with ast.literal_eval(x).get("key") instead of direct indexing ["key"], because some rows may not contain every key. Do not call literal_eval directly.
+- When extracting multiple fields from a dictionary-like column, parse the column once into a separate variable and extract all fields from that parsed object. Do not overwrite the original column before extracting all needed fields.
 
 DataFrame columns:
 {list(df.columns)}
