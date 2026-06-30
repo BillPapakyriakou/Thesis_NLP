@@ -4,6 +4,22 @@ from difflib import SequenceMatcher
 import pandas as pd
 
 
+ABSTRACT_VALUE_QUERY_TERMS = [
+    "largest", "smallest", "highest", "lowest",
+    "maximum", "minimum", "max", "min",
+    "top", "first", "last",
+    "most common", "least common", "most frequent", "least frequent",
+    "average", "mean", "count", "total", "sum",
+    "year", "date", "rating", "amount",
+    "contract", "procurement", "category",
+    "greater than", "less than", "more than", "fewer than",
+    "above", "below",
+]
+
+def looks_like_abstract_value_query(query: str) -> bool:
+    q = normalize_text(query)
+    return any(term in q for term in ABSTRACT_VALUE_QUERY_TERMS)
+
 def normalize_text(text: str) -> str:
 
     # normalize text for easier column name and question comparison
@@ -117,6 +133,13 @@ def find_values(
 
     if not query_norm:
         return f"find_values({column!r}, {query!r}) error: empty query."
+
+    if looks_like_abstract_value_query(query):
+        return (
+            f"find_values(column={column!r}, query={query!r}) skipped: "
+            "query looks like an operation, comparison, aggregation, or abstract concept, "
+            "not a literal cell value."
+        )
 
     series = df[column].dropna()
 

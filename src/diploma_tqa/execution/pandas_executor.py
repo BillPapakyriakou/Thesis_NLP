@@ -19,6 +19,7 @@ def execute_answer_body(body: str, df: pd.DataFrame, timeout: int = 30):
             "pd": pd,
             "np": np,
             "ast": ast,
+            "literal_eval": ast.literal_eval,
             "df": df,
         }
 

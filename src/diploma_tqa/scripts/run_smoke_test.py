@@ -95,7 +95,7 @@ def main():
 
     args = parser.parse_args()
 
-    REACT_MAX_STEPS = 3
+    REACT_MAX_STEPS = 2
     REACT_MAX_TOOL_CALLS = 3
     INSPECT_MAX_TOOL_CALLS = 3
 
@@ -238,8 +238,6 @@ def main():
                         }
                     )
 
-                    if plan.get("stop", False):
-                        break
 
                 tool_raw = json.dumps(react_steps, ensure_ascii=False)
                 tool_calls = all_tool_calls

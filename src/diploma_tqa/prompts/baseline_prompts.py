@@ -47,15 +47,17 @@ Important rules:
 - Use only pandas/numpy operations on df.
 - Do not guess entity names, values, or answers. Compute them from df.
 - Return only the value requested by the question, with no extra associated values.
+- Never invent column names. Use only exact column names from DataFrame columns or tool observations. If a natural-language field name is not present, choose the closest exact column from the provided columns.
 - If the question asks "any" or "is there", return a single boolean using .any() or a grouped condition.
 - If the question asks "all", "every", or "for any of their posts", use .all() or groupby when needed.
 - If the question asks "mainly", interpret it as proportion > 0.5.
-- If the question asks for the "most", "highest", "largest", "longest", or "top N", compute the relevant entity using sorting, groupby, idxmax(), or nlargest().
+- If the question asks for the "most", "highest", "largest", "longest", or "top N", compute the relevant entity using sorting, groupby, idxmax(), or nlargest(). Before numeric ranking or comparison, convert the target column with pd.to_numeric(..., errors="coerce") unless it is already numeric.
+- Do not call nlargest(), nsmallest(), max(), or min() directly on categorical/string columns when a numeric comparison is intended.
 - If a top entity has an empty or missing name/value, skip it and use the next valid one.
 - Do not return a Series, DataFrame, tuple, or dictionary unless the expected answer type explicitly requires a list.
 - Stop immediately after the return statement.
 - Use tool observations when they identify exact column names or useful column values.
-- If a column contains dictionary-like strings such as "{{'key': value}}", parse them with ast.literal_eval before accessing keys.
+- If a column contains dictionary-like strings such as "{{'key': value}}", parse them with ast.literal_eval before accessing keys. Do not call literal_eval directly.
 
 DataFrame columns:
 {list(df.columns)}

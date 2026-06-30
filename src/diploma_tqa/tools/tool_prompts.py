@@ -42,6 +42,7 @@ Available tools:
 Rules:
 - Return valid JSON only.
 - Do not write markdown.
+- Tool arguments must use exact column names from Available columns. Never use guessed column names.
 - Request at most {max_tool_calls} tool calls.
 - Return {{"tool_calls": []}} only when no useful tool call would reduce uncertainty.
 - Prefer find_columns when unsure about an exact column name.
@@ -100,27 +101,33 @@ Available tools:
    - Example: {{"name": "profile_column", "args": {{"column": "author_name"}}}}
 
 3. find_values(column, query)
-   - Use only to match a concrete value/entity from the question to cell values in a known column.
-   - Good for quoted titles, names, countries, cities, organizations, products, or specific phrases.
-   - Do not use for abstract concepts or operations like year, date, rating, count, average, maximum, amount, contract, procurement, or category.
+   - Match a literal value/entity from the question to cell values in a known column.
+   - Use for quoted titles, person names, countries, cities, organizations, products, codes, or exact phrases.
+   - Do not use for operations or abstract concepts such as year, date, rating, count, average, maximum, minimum, top, first, amount, contract, procurement, category, or distribution.
    - The column must be an exact column name from Available columns.
    - Example: {{"name": "find_values", "args": {{"column": "title", "query": "value with a view"}}}}
 
 Rules:
 - Return valid JSON only.
 - Do not write markdown.
+- Tool arguments must use exact column names from Available columns. Never use guessed column names.
+- Request at most {max_tool_calls} tool calls.
+- Request only tool calls that reduce uncertainty before code generation.
+- Return no tool calls only when the relevant columns and values are already obvious.
+- Use multiple tool calls only when they answer different uncertainties.
+- Prefer find_columns when unsure about an exact column name.
+- Prefer profile_column when the answer depends on value format, distribution, numeric range, common values, maximum, minimum, top-k, average, or most/least common values.
+- Prefer find_values only when the question contains a literal cell value such as a quoted title, person name, country, city, organization, product, code, or exact phrase.
+- Do not use find_values for operations, comparisons, aggregations, column meanings, or generic words from the question.
+- Never use placeholders such as "<result from previous tool call>" as column names.
+
+Additional ReAct rules:
 - Do not answer the question.
 - Do not write code.
-- This is planning step {step} of at most {max_steps}.
-- Request at most {max_tool_calls} tool calls.
+- The "thought" field must be one short sentence describing what uncertainty remains.
 - Use previous observations to avoid repeated or unnecessary calls.
-- Prefer find_columns when unsure about an exact column name.
-- Prefer profile_column when unsure what values a column contains.
-- Prefer find_values only when the question mentions a concrete entity, title, name, or phrase that may appear as a cell value.
-- Do not use find_values for abstract concepts, operations, or column meanings.
-- Do not call find_values unless you already know the exact column name to search.
-- If enough information is available, return {{"tool_calls": [], "stop": true}}.
-- Otherwise return {{"tool_calls": [...], "stop": false}}.
+- If enough information is available, return {{"thought": "Enough information is available for code generation.", "tool_calls": [], "stop": true}}.
+- Otherwise return {{"thought": "...", "tool_calls": [...], "stop": false}}.
 
 Return JSON:
 """.strip()
