@@ -24,6 +24,7 @@ from diploma_tqa.tools.tool_runner import (
     parse_tool_calls,
     parse_react_plan,
     execute_tool_calls,
+    format_react_plan,
 )
 
 def make_json_safe(obj):
@@ -99,6 +100,13 @@ def main():
         help="Optional text file containing 0-based example indices to evaluate, one per line.",
     )
 
+    parser.add_argument(
+        "--react-observation-mode",
+        choices=["raw", "plan", "plan_plus_raw"],
+        default="plan",
+        help="Controls what react-inspect passes to the code-generation prompt.",
+    )
+
     args = parser.parse_args()
 
     REACT_MAX_STEPS = 2
@@ -156,6 +164,7 @@ def main():
         tool_calls = []
         tool_observations = ""
         react_steps = []
+        latest_plan = {}
 
         # optional tool stage
         if args.tool_mode == "auto-schema":
@@ -194,90 +203,196 @@ def main():
             except Exception as e:
                 tool_observations = f"Tool planning failed: {e}"
 
+
         elif args.tool_mode == "react-inspect":
-            # iterative tool planning: observe -> plan next tool call(s) -> observe again
+
+            # iterative tool planning: plan -> act -> observe -> update compact plan
+
             react_steps = []
+
             all_tool_calls = []
+
             all_observations = []
+
             seen_tool_calls = set()
 
+            latest_plan = {}
+
             try:
+
                 for step in range(1, REACT_MAX_STEPS + 1):
+
                     previous_observations = (
+
                         "\n\n".join(all_observations)
+
                         if all_observations
+
                         else ""
+
                     )
 
                     tool_prompt = make_react_tool_planning_prompt(
+
                         row=row,
+
                         df=df,
+
                         previous_observations=previous_observations,
+
                         step=step,
+
                         max_steps=REACT_MAX_STEPS,
+
                         max_tool_calls=REACT_MAX_TOOL_CALLS,
+
                     )
 
                     raw_plan = llm.generate(tool_prompt)
+
                     plan = parse_react_plan(
+
                         raw_plan,
+
                         max_tool_calls=REACT_MAX_TOOL_CALLS,
+
                     )
 
                     thought = plan.get("thought", "")
 
+                    current_plan = plan.get("current_plan", {})
+
+                    if current_plan:
+                        latest_plan = current_plan
+
                     step_calls = plan.get("tool_calls", [])
 
                     # Remove repeated calls within the same example.
+
                     new_calls = []
+
                     for call in step_calls:
+
                         key = tool_call_key(call)
+
                         if key not in seen_tool_calls:
                             seen_tool_calls.add(key)
+
                             new_calls.append(call)
 
                     step_calls = new_calls
 
                     if not step_calls:
                         react_steps.append(
+
                             {
+
                                 "step": step,
+
                                 "thought": thought,
+
                                 "raw_response": raw_plan,
+
+                                "current_plan": current_plan,
+
                                 "tool_calls": [],
+
                                 "observation": "",
+
                                 "stop": True,
+
                             }
+
                         )
+
                         break
 
                     observation = execute_tool_calls(step_calls, df)
 
                     all_tool_calls.extend(step_calls)
+
                     all_observations.append(
+
                         f"Step {step} observations:\n{observation}"
+
                     )
 
                     react_steps.append(
+
                         {
+
                             "step": step,
+
                             "thought": thought,
+
                             "raw_response": raw_plan,
+
+                            "current_plan": current_plan,
+
                             "tool_calls": step_calls,
+
                             "observation": observation,
+
                             "stop": bool(plan.get("stop", False)),
+
                         }
+
                     )
 
+                    # If the model explicitly says stop after these calls,
+
+                    # allow the next iteration only if there are remaining steps?
+
+                    # For now, respect stop after saving the observation.
+
+                    if plan.get("stop", False):
+                        break
+
+                compact_plan = format_react_plan(latest_plan)
+
+                raw_observations = "\n\n".join(all_observations)
+
+                if args.react_observation_mode == "raw":
+
+                    tool_observations = raw_observations
+
+
+                elif args.react_observation_mode == "plan":
+
+                    tool_observations = compact_plan
+
+
+                elif args.react_observation_mode == "plan_plus_raw":
+
+                    if compact_plan and raw_observations:
+
+                        tool_observations = (
+
+                                compact_plan
+
+                                + "\n\nSupporting observations:\n"
+
+                                + raw_observations
+
+                        )
+
+                    else:
+
+                        tool_observations = compact_plan or raw_observations
 
                 tool_raw = json.dumps(react_steps, ensure_ascii=False)
+
                 tool_calls = all_tool_calls
-                tool_observations = "\n\n".join(all_observations)
+
 
             except Exception as e:
+
                 tool_observations = f"ReAct tool planning failed: {e}"
+
                 tool_raw = None
+
                 tool_calls = []
+
                 react_steps = []
 
         # initial code generation and main prompt creation
@@ -375,6 +490,11 @@ def main():
             "num_react_steps": len(react_steps) if args.tool_mode == "react-inspect" else 0,
             "num_tool_calls": len(tool_calls),
 
+            "react_observation_mode": (
+                args.react_observation_mode if args.tool_mode == "react-inspect" else None
+            ),
+            "react_final_plan": latest_plan if args.tool_mode == "react-inspect" else None,
+
             "raw_response": raw,
             "extracted_code": code,
             "prediction": pred,
@@ -453,6 +573,9 @@ def main():
 
         "schema_mode": args.schema_mode,
         "tool_mode": args.tool_mode,
+        "react_observation_mode": (
+            args.react_observation_mode if args.tool_mode == "react-inspect" else None
+        ),
 
         "max_retries": args.max_retries,
         "error_fixing_enabled": args.max_retries > 0,

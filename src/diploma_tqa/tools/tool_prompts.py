@@ -125,9 +125,29 @@ Additional ReAct rules:
 - Do not answer the question.
 - Do not write code.
 - The "thought" field must be one short sentence describing what uncertainty remains.
-- Use previous observations to avoid repeated or unnecessary calls.
-- If enough information is available, return {{"thought": "Enough information is available for code generation.", "tool_calls": [], "stop": true}}.
-- Otherwise return {{"thought": "...", "tool_calls": [...], "stop": false}}.
+- Maintain a "current_plan" object that summarizes what the coder should do.
+- The current_plan must be based only on the question, available columns, dtypes, and observations.
+- If several columns could match the question, inspect or compare them before choosing.
+- Do not commit to one column only because find_columns returned it.
+- Use the "avoid" field for columns or interpretations that look misleading.
+- If enough information is available, return stop=true with no tool calls and a complete current_plan.
+- Otherwise return stop=false with useful tool calls and the best current_plan so far.
+
+Return JSON in this format:
+{{
+  "thought": "I need to compare the possible weekday columns.",
+  "tool_calls": [
+    {{"name": "profile_column", "args": {{"column": "Weekday"}}}},
+    {{"name": "profile_column", "args": {{"column": "Weekday_1"}}}}
+  ],
+  "stop": false,
+  "current_plan": {{
+    "relevant_columns": ["Weekday", "Weekday_1"],
+    "value_mappings": [],
+    "operation": "Choose the column whose values are weekday names.",
+    "avoid": ["Do not return numeric weekday ids if the question asks for names."]
+  }}
+}}
 
 Return JSON:
 """.strip()

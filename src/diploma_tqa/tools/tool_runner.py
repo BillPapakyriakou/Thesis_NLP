@@ -49,6 +49,36 @@ def parse_tool_calls(raw: str, max_tool_calls: int = 3) -> list[dict]:
 
     return valid
 
+
+def format_react_plan(plan: dict) -> str:
+    if not plan:
+        return ""
+
+    lines = ["ReAct inspection plan for code generation:"]
+
+    relevant_columns = plan.get("relevant_columns", [])
+    value_mappings = plan.get("value_mappings", [])
+    operation = plan.get("operation", "")
+    avoid = plan.get("avoid", [])
+
+    if relevant_columns:
+        lines.append(f"- Relevant columns: {relevant_columns}")
+
+    if value_mappings:
+        lines.append("- Value mappings:")
+        for item in value_mappings:
+            lines.append(f"  - {item}")
+
+    if operation:
+        lines.append(f"- Operation: {operation}")
+
+    if avoid:
+        lines.append("- Avoid:")
+        for item in avoid:
+            lines.append(f"  - {item}")
+
+    return "\n".join(lines)
+
 def parse_react_plan(raw: str, max_tool_calls: int = 3) -> dict:
     obj = extract_json_object(raw)
 
@@ -82,10 +112,27 @@ def parse_react_plan(raw: str, max_tool_calls: int = 3) -> dict:
             if len(valid_calls) >= max_tool_calls:
                 break
 
+    current_plan = obj.get("current_plan", {})
+    if not isinstance(current_plan, dict):
+        current_plan = {}
+
+    def clean_string_list(value):
+        if not isinstance(value, list):
+            return []
+        return [str(x) for x in value if isinstance(x, (str, int, float))]
+
+    current_plan = {
+        "relevant_columns": clean_string_list(current_plan.get("relevant_columns", [])),
+        "value_mappings": clean_string_list(current_plan.get("value_mappings", [])),
+        "operation": str(current_plan.get("operation", "") or ""),
+        "avoid": clean_string_list(current_plan.get("avoid", [])),
+    }
+
     return {
         "thought": thought,
         "tool_calls": valid_calls,
         "stop": stop or len(valid_calls) == 0,
+        "current_plan": current_plan,
         "parse_error": None,
     }
 
