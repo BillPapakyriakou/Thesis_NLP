@@ -120,7 +120,11 @@ def main():
             ]
 
         full_qa = load_qa(name="semeval", split="test", limit=None)
-        qa = [full_qa[i] for i in selected_indices]
+
+        if hasattr(full_qa, "select"):
+            qa = full_qa.select(selected_indices)
+        else:
+            qa = [full_qa[i] for i in selected_indices]
     else:
         selected_indices = None
 
