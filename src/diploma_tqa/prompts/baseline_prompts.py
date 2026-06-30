@@ -57,7 +57,7 @@ Important rules:
 - Do not return a Series, DataFrame, tuple, or dictionary unless the expected answer type explicitly requires a list.
 - Stop immediately after the return statement.
 - Use tool observations when they identify exact column names or useful column values.
-- If a column contains dictionary-like strings such as "{{'key': value}}", parse them with ast.literal_eval before accessing keys. Do not call literal_eval directly.
+- If a column contains dictionary-like strings such as "{{'key': value}}", parse them with ast.literal_eval(x).get("key") instead of direct indexing ["key"], because some rows may not contain every key. Do not call literal_eval directly.
 
 DataFrame columns:
 {list(df.columns)}
