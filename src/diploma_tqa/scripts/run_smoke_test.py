@@ -93,6 +93,12 @@ def main():
         default="none",
     )
 
+    parser.add_argument(
+        "--indices-file",
+        default=None,
+        help="Optional text file containing 0-based example indices to evaluate, one per line.",
+    )
+
     args = parser.parse_args()
 
     REACT_MAX_STEPS = 2
@@ -103,6 +109,21 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     qa = load_qa(name="semeval", split="test", limit=args.limit)
+
+    # use indices file to run selected examples - if indices_file argument is not empty
+    if args.indices_file is not None:
+        with open(args.indices_file, "r", encoding="utf-8") as f:
+            selected_indices = [
+                int(line.strip())
+                for line in f
+                if line.strip() and not line.strip().startswith("#")
+            ]
+
+        full_qa = load_qa(name="semeval", split="test", limit=None)
+        qa = [full_qa[i] for i in selected_indices]
+    else:
+        selected_indices = None
+
     llm = OllamaClient(model=args.model)
 
     predictions = []
@@ -118,7 +139,13 @@ def main():
         dynamic_ncols=True,
     )
 
-    for i, row in enumerate(progress, start=1):
+    # for i, row in enumerate(progress, start=1):
+    for local_i, row in enumerate(progress, start=1):
+        original_index = (
+            selected_indices[local_i - 1]
+            if selected_indices is not None
+            else local_i - 1
+        )
         df = load_table(row["dataset"], lite=args.lite)
 
         tool_raw = None
@@ -351,6 +378,8 @@ def main():
             "error": error,
             "num_attempts": len(attempts),
             "attempts": attempts,
+
+            "example_index": original_index,
         }
 
         logs.append(log_item)
@@ -441,6 +470,9 @@ def main():
             if logs
             else 0
         ),
+
+        "indices_file": args.indices_file,
+        "selected_indices": selected_indices,
 
         "retried_examples": num_retried,
         "attempt_counts": attempt_counts,
