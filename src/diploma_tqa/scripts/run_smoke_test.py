@@ -34,7 +34,6 @@ from diploma_tqa.tools.tool_runner import (
 )
 
 def make_json_safe(obj):
-
     # convert numpy/pandas objects into Python objects
 
     if isinstance(obj, dict):
@@ -45,6 +44,9 @@ def make_json_safe(obj):
 
     if isinstance(obj, tuple):
         return [make_json_safe(v) for v in obj]
+
+    if isinstance(obj, np.ndarray):
+        return make_json_safe(obj.tolist())
 
     if isinstance(obj, np.integer):
         return int(obj)
