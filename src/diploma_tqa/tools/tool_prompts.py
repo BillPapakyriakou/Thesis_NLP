@@ -251,8 +251,12 @@ Common semantic errors to check:
 Decision rules:
 - Use decision="accept" only when the code, prediction, and answer contract are consistent.
 - Use decision="need_evidence" when column meaning, value format, or entity matching is unclear.
-- Use decision="repair" only when you can give a concrete repair instruction.
+- Use decision="repair" when the code contradicts the answer contract, even if the exact corrected code is not obvious.
+- If the prediction type or returned value does not match the question, repair rather than accept.
+- If the code returns an index but the question asks for a name/category/value, repair.
+- If the code uses a column that is not mentioned in the answer contract, repair or request evidence.
 - Do not request evidence that is already present.
+- Never accept only because the code executed successfully. Executable code can still be semantically wrong.
 - Request at most 3 verification tool calls.
 
 Return JSON in this format:

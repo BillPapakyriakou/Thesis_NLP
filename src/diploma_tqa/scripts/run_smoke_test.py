@@ -142,26 +142,39 @@ def run_semantic_critic_loop(
             if decision == "need_evidence":
                 verification_calls = critic_result.get("verification_tool_calls", [])
 
-                if not verification_calls:
-                    step_log["observation"] = (
-                        "Critic requested evidence but provided no valid tool calls. "
-                        "Keeping previous prediction."
+                if verification_calls:
+                    observation = execute_tool_calls(verification_calls, df)
+
+                    post_code_observations_list.append(
+                        f"Post-code semantic critic step {semantic_step_idx} observations:\n{observation}"
                     )
+
+                    step_log["tool_calls"] = verification_calls
+                    step_log["observation"] = observation
                     semantic_react_steps.append(step_log)
-                    break
 
-                observation = execute_tool_calls(verification_calls, df)
+                    if semantic_step_idx < semantic_critic_max_steps:
+                        continue
 
-                post_code_observations_list.append(
-                    f"Post-code semantic critic step {semantic_step_idx} observations:\n{observation}"
-                )
+                # If final step still wants evidence, force a repair attempt.
+                critic_result["decision"] = "repair"
+                critic_result["accept"] = False
+                decision = "repair"
 
-                step_log["tool_calls"] = verification_calls
-                step_log["observation"] = observation
-                semantic_react_steps.append(step_log)
+                if not critic_result.get("repair_instruction"):
+                    critic_result["repair_instruction"] = (
+                        "The critic could not confidently accept the previous code. "
+                        "Rewrite the code using the answer contract and all available observations. "
+                        "Make sure the computation columns and return columns match the question."
+                    )
 
-                # Continue to the next critic step with the new evidence.
-                continue
+                if not critic_result.get("must_return"):
+                    critic_result["must_return"] = (
+                        "Return exactly the requested answer value with the expected answer type."
+                    )
+
+                step_log["converted_need_evidence_to_repair"] = True
+                # Do not append/break here; let execution fall through into the repair block.
 
             # Case 3: critic has enough evidence and requests repair.
             if decision == "repair":
