@@ -223,32 +223,31 @@ Return valid JSON only:
 """.strip()
 
 
-def make_semantic_react_repair_prompt(
-    row,
-    df,
-    previous_code,
-    previous_prediction,
-    critic_result,
-    tool_observations="",
+def make_semantic_react_critic_prompt(
+    question,
+    answer_type,
+    columns,
+    dtypes,
+    preview,
+    tool_observations,
+    generated_code,
+    prediction,
+    execution_error=None,
+    post_code_observations="",
 ):
-    question = row["question"]
-    answer_type = row.get("type", "unknown")
-
-    columns = list(df.columns)
-    dtypes = {c: str(df[c].dtype) for c in df.columns}
-    preview = df.head(5).to_string(index=False)
-
-    critic_reason = critic_result.get("reason", "")
-    repair_instruction = critic_result.get("repair_instruction", "")
-    must_use_columns = critic_result.get("must_use_columns", [])
-    avoid_columns = critic_result.get("avoid_columns", [])
-    must_return = critic_result.get("must_return", "")
-
     return f"""
-You previously wrote Pandas code for a table question, and it executed successfully.
-However, a semantic critic found that the code may not answer the question correctly.
+You are a post-code semantic ReAct critic for a Pandas table-question-answering system.
 
-Rewrite the answer(df) function body.
+Your job is to decide whether the generated code and prediction actually answer the question.
+
+You can do one of three things:
+1. accept: the code and prediction answer the question.
+2. need_evidence: you need more dataframe evidence before deciding.
+3. repair: the semantic error is clear enough to give a concrete code-repair instruction.
+
+Do not answer the original question directly.
+Do not write code.
+Return valid JSON only.
 
 Question:
 {question}
@@ -265,42 +264,87 @@ Dtypes:
 Data preview:
 {preview}
 
-Inspection observations:
+Pre-code inspection observations:
 {tool_observations if tool_observations else "None"}
 
-Previous code:
-{previous_code}
+Post-code verification observations:
+{post_code_observations if post_code_observations else "None"}
 
-Previous prediction:
-{previous_prediction}
+Generated code:
+{generated_code}
 
-Semantic critic reason:
-{critic_reason}
+Execution error:
+{execution_error if execution_error else "None"}
 
-Repair instruction:
-{repair_instruction}
+Prediction:
+{prediction}
 
-Must use columns if relevant:
-{must_use_columns}
+Available verification tools:
+1. find_columns(query)
+   - Use when the generated code may have used the wrong column or missed a better candidate.
+   - Example: {{"name": "find_columns", "args": {{"query": "sale discount offer status"}}}}
 
-Avoid columns/interpreations if relevant:
-{avoid_columns}
+2. profile_column(column)
+   - Use to inspect values, formats, numeric ranges, common values, or dictionary-like strings.
+   - The column must be an exact column name from Available columns.
+   - Example: {{"name": "profile_column", "args": {{"column": "Month"}}}}
 
-The corrected code must return:
-{must_return}
+3. find_values(column, query)
+   - Use to match a literal question value to actual cell values in a known column.
+   - Use for names, titles, countries, cities, products, organizations, codes, labels, categories, years, dates, seasons, or exact phrases.
+   - The column must be an exact column name from Available columns.
+   - Example: {{"name": "find_values", "args": {{"column": "year", "query": "2012"}}}}
 
-Important rules:
-- Return only the body of answer(df), not a full function definition.
-- Do not use markdown.
-- Use only columns that exist in the dataframe.
-- Do not return dataframe indices unless the question explicitly asks for indices.
-- If ranking by one column but the question asks for a name/category/value, return the requested column value, not the index.
-- If the question asks for numerical values or IDs, do not return name/label columns.
-- If the question asks for names/labels/months/weekdays, do not return numeric ID columns unless those are the only available representation.
-- If the question asks for largest/smallest values, sort the values themselves unless it says most common or most frequent.
-- If the question asks for most common/frequent, use value_counts or mode.
-- For boolean sale/discount/status questions, prefer explicit flag/status columns over numeric proxy columns.
-- Return a value compatible with the expected answer type.
+Before deciding, build an answer contract:
+- What operation does the question require?
+- Which columns are used for filtering?
+- Which columns are used for grouping?
+- Which columns are used for aggregation or sorting?
+- Which column/value should be returned?
+- What representation is expected: number, category, boolean, list[number], or list[category]?
+- If the computation column and return column differ, make that explicit.
 
-Corrected answer(df) body:
+Common semantic errors to check:
+- Returning a dataframe index instead of the requested label/name/value.
+- Ranking by the right metric but returning the wrong column.
+- Using a numeric ID column when the question asks for a name/label/month/weekday.
+- Using a name/label column when the question asks for numerical values or IDs.
+- Using value_counts/mode when the question asks for largest/smallest values.
+- Sorting values when the question asks for most common/most frequent.
+- Using a proxy column when an explicit semantic/status column may exist.
+- Ignoring a literal entity, year, date, or season from the question.
+- Returning the wrong expected answer type.
+- Mishandling dictionary-like string columns.
+
+Decision rules:
+- Use decision="accept" only when the code, prediction, and answer contract are consistent.
+- Use decision="need_evidence" when column meaning, value format, or entity matching is unclear.
+- Use decision="repair" only when you can give a concrete repair instruction.
+- Do not request evidence that is already present.
+- Request at most 3 verification tool calls.
+
+Return JSON in this format:
+{{
+  "decision": "accept | need_evidence | repair",
+  "accept": true or false,
+  "reason": "one short explanation",
+  "error_type": "none | wrong_column | wrong_operation | wrong_return_column | wrong_value_mapping | wrong_answer_type | entity_mismatch | code_error | uncertain",
+  "answer_contract": {{
+    "operation": "short description",
+    "filter_columns": [],
+    "group_columns": [],
+    "aggregate_columns": [],
+    "sort_columns": [],
+    "return_columns": [],
+    "expected_representation": "number | category | boolean | list[number] | list[category] | unknown",
+    "notes": []
+  }},
+  "verification_tool_calls": [
+    {{"name": "find_columns", "args": {{"query": "..."}}}}
+  ],
+  "repair_instruction": "If decision is repair, give a concrete instruction for regenerating the code. Otherwise empty string.",
+  "must_use_columns": [],
+  "avoid_columns": [],
+  "must_return": "Describe what the corrected code should return. If not repairing, empty string."
+}}
 """.strip()

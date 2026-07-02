@@ -72,6 +72,180 @@ def tool_call_key(call):
     return json.dumps(call, sort_keys=True, ensure_ascii=False)
 
 
+def run_semantic_critic_loop(
+    row,
+    df,
+    llm,
+    code,
+    pred,
+    tool_observations,
+    attempts,
+    args,
+    react_max_tool_calls,
+):
+    semantic_react_steps = []
+    post_code_observations_list = []
+
+    success = not is_execution_error(pred)
+    error = None if success else str(pred)
+
+    if (
+        args.post_code_react_mode != "semantic-critic"
+        or not success
+        or is_execution_error(pred)
+    ):
+        return code, pred, success, error, semantic_react_steps, ""
+
+    semantic_repair_count = 0
+    semantic_critic_max_steps = 2
+
+    for semantic_step_idx in range(1, semantic_critic_max_steps + 1):
+        try:
+            critic_prompt = make_semantic_react_critic_prompt(
+                question=row["question"],
+                answer_type=row.get("type", "unknown"),
+                columns=list(df.columns),
+                dtypes={c: str(df[c].dtype) for c in df.columns},
+                preview=df.head(5).to_string(index=False),
+                tool_observations=tool_observations,
+                post_code_observations="\n\n".join(post_code_observations_list),
+                generated_code=code,
+                prediction=pred,
+                execution_error=None,
+            )
+
+            critic_raw = llm.generate(critic_prompt)
+
+            critic_result = parse_semantic_critic(
+                critic_raw,
+                max_tool_calls=react_max_tool_calls,
+            )
+
+            decision = critic_result.get("decision", "accept")
+
+            step_log = {
+                "stage": f"semantic_critic_{semantic_step_idx}",
+                "critic_raw": critic_raw,
+                "critic_result": critic_result,
+                "decision": decision,
+                "accepted": decision == "accept",
+                "tool_calls": [],
+                "observation": "",
+            }
+
+            # Case 1: critic accepts current prediction.
+            if decision == "accept":
+                semantic_react_steps.append(step_log)
+                break
+
+            # Case 2: critic wants more evidence before deciding.
+            if decision == "need_evidence":
+                verification_calls = critic_result.get("verification_tool_calls", [])
+
+                if not verification_calls:
+                    step_log["observation"] = (
+                        "Critic requested evidence but provided no valid tool calls. "
+                        "Keeping previous prediction."
+                    )
+                    semantic_react_steps.append(step_log)
+                    break
+
+                observation = execute_tool_calls(verification_calls, df)
+
+                post_code_observations_list.append(
+                    f"Post-code semantic critic step {semantic_step_idx} observations:\n{observation}"
+                )
+
+                step_log["tool_calls"] = verification_calls
+                step_log["observation"] = observation
+                semantic_react_steps.append(step_log)
+
+                # Continue to the next critic step with the new evidence.
+                continue
+
+            # Case 3: critic has enough evidence and requests repair.
+            if decision == "repair":
+                if semantic_repair_count >= args.post_code_react_max_retries:
+                    step_log["repair_skipped"] = "Maximum semantic repair retries reached."
+                    semantic_react_steps.append(step_log)
+                    break
+
+                if not critic_result.get("repair_instruction"):
+                    step_log["repair_skipped"] = "No repair instruction provided."
+                    semantic_react_steps.append(step_log)
+                    break
+
+                semantic_repair_count += 1
+
+                combined_observations = tool_observations
+
+                if post_code_observations_list:
+                    combined_observations = (
+                        f"{tool_observations}\n\n"
+                        "Post-code verification observations:\n"
+                        f"{chr(10).join(post_code_observations_list)}"
+                    )
+
+                semantic_fix_prompt = make_semantic_react_repair_prompt(
+                    row=row,
+                    df=df,
+                    previous_code=code,
+                    previous_prediction=pred,
+                    critic_result=critic_result,
+                    tool_observations=combined_observations,
+                )
+
+                semantic_raw = llm.generate(semantic_fix_prompt)
+                semantic_code = extract_answer_body(semantic_raw)
+                semantic_pred = execute_answer_body(semantic_code, df)
+
+                step_log.update(
+                    {
+                        "repair_raw_response": semantic_raw,
+                        "repair_code": semantic_code,
+                        "repair_prediction": semantic_pred,
+                        "repair_success": not is_execution_error(semantic_pred),
+                    }
+                )
+
+                semantic_react_steps.append(step_log)
+
+                attempts.append(
+                    {
+                        "stage": f"semantic_react_fix_{semantic_repair_count}",
+                        "raw_response": semantic_raw,
+                        "code": semantic_code,
+                        "prediction": semantic_pred,
+                        "critic_result": critic_result,
+                        "post_code_observations": "\n\n".join(post_code_observations_list),
+                    }
+                )
+
+                # Keep old successful prediction if repair crashes.
+                if not is_execution_error(semantic_pred):
+                    code = semantic_code
+                    pred = semantic_pred
+                    success = True
+                    error = None
+                    break
+
+                step_log["kept_previous_prediction"] = True
+                break
+
+        except Exception as e:
+            semantic_react_steps.append(
+                {
+                    "stage": f"semantic_critic_{semantic_step_idx}",
+                    "error": str(e),
+                }
+            )
+            break
+
+    post_code_observations = "\n\n".join(post_code_observations_list)
+
+    return code, pred, success, error, semantic_react_steps, post_code_observations
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -475,131 +649,61 @@ def main():
             if is_execution_error(pred):
                 success = False
                 error = str(pred)
+                post_code_observations = ""
             else:
                 success = True
                 error = None
 
-                # Optional post-code semantic ReAct critic.
-                # This runs only after code executes successfully. It is meant to catch
-                # wrong-but-executable programs, not syntax/runtime errors.
-                semantic_react_steps = []
+                (
+                    code,
+                    pred,
+                    success,
+                    error,
+                    semantic_react_steps,
+                    post_code_observations,
+                ) = run_semantic_critic_loop(
+                    row=row,
+                    df=df,
+                    llm=llm,
+                    code=code,
+                    pred=pred,
+                    tool_observations=tool_observations,
+                    attempts=attempts,
+                    args=args,
+                    react_max_tool_calls=REACT_MAX_TOOL_CALLS,
+                )
 
-                if (
-                        args.post_code_react_mode == "semantic-critic"
-                        and success
-                        and not is_execution_error(pred)
-                ):
-                    semantic_retry_count = 0
-
-                    while semantic_retry_count < args.post_code_react_max_retries:
-                        semantic_retry_count += 1
-
-                        try:
-                            critic_prompt = make_semantic_react_critic_prompt(
-                                question=row["question"],
-                                answer_type=row.get("type", "unknown"),
-                                columns=list(df.columns),
-                                dtypes={c: str(df[c].dtype) for c in df.columns},
-                                preview=df.head(5).to_string(index=False),
-                                tool_observations=tool_observations,
-                                generated_code=code,
-                                prediction=pred,
-                                execution_error=None,
-                            )
-
-                            critic_raw = llm.generate(critic_prompt)
-                            critic_result = parse_semantic_critic(critic_raw)
-
-                            semantic_step = {
-                                "stage": f"semantic_critic_{semantic_retry_count}",
-                                "critic_raw": critic_raw,
-                                "critic_result": critic_result,
-                                "accepted": critic_result.get("accept", True),
-                            }
-
-                            # If critic accepts, keep current prediction.
-                            if critic_result.get("accept", True):
-                                semantic_react_steps.append(semantic_step)
-                                break
-
-                            # If critic rejects but gives no repair instruction, avoid random rewrite.
-                            if not critic_result.get("repair_instruction"):
-                                semantic_step["repair_skipped"] = "No repair instruction."
-                                semantic_react_steps.append(semantic_step)
-                                break
-
-                            semantic_fix_prompt = make_semantic_react_repair_prompt(
-                                row=row,
-                                df=df,
-                                previous_code=code,
-                                previous_prediction=pred,
-                                critic_result=critic_result,
-                                tool_observations=tool_observations,
-                            )
-
-                            semantic_raw = llm.generate(semantic_fix_prompt)
-                            semantic_code = extract_answer_body(semantic_raw)
-                            semantic_pred = execute_answer_body(semantic_code, df)
-
-                            semantic_step.update(
-                                {
-                                    "repair_raw_response": semantic_raw,
-                                    "repair_code": semantic_code,
-                                    "repair_prediction": semantic_pred,
-                                    "repair_success": not is_execution_error(semantic_pred),
-                                }
-                            )
-
-                            semantic_react_steps.append(semantic_step)
-
-                            attempts.append(
-                                {
-                                    "stage": f"semantic_react_fix_{semantic_retry_count}",
-                                    "raw_response": semantic_raw,
-                                    "code": semantic_code,
-                                    "prediction": semantic_pred,
-                                    "critic_result": critic_result,
-                                }
-                            )
-
-                            # Accept the repaired prediction only if it executes.
-                            # If it fails, keep the old successful prediction.
-                            if not is_execution_error(semantic_pred):
-                                code = semantic_code
-                                pred = semantic_pred
-                                success = True
-                                error = None
-                            else:
-                                # Do not replace a successful prediction with a runtime error.
-                                semantic_step["kept_previous_prediction"] = True
-                                break
-
-                        except Exception as e:
-                            semantic_react_steps.append(
-                                {
-                                    "stage": f"semantic_critic_{semantic_retry_count}",
-                                    "error": str(e),
-                                }
-                            )
-                            break
-                else:
-                    semantic_react_steps = []
 
         except Exception as e:
+
             code = None
+
             pred = f"__CODE_ERROR__: {e}"
+
             error = str(e)
+
             success = False
 
+            post_code_observations = ""
+
             attempts.append(
+
                 {
+
                     "stage": "exception",
+
                     "raw_response": raw,
+
                     "code": None,
+
                     "prediction": pred,
+
                     "error": error,
+
                 }
+
             )
+
         # stores prediction and detailed log for every example
         pred = make_json_safe(pred)
         predictions.append(pred)
@@ -627,6 +731,7 @@ def main():
             "post_code_react_max_retries": args.post_code_react_max_retries,
             "semantic_react_steps": semantic_react_steps,
             "num_semantic_react_steps": len(semantic_react_steps),
+            "post_code_observations": post_code_observations,
 
             "raw_response": raw,
             "extracted_code": code,
@@ -689,12 +794,13 @@ def main():
     if args.post_code_react_mode == "semantic-critic":
         for item in logs:
             for step in item.get("semantic_react_steps", []):
-                # one model call for critic
+                # one LLM call for the critic/verifier
                 total_model_calls += 1
 
-                # one additional model call if it generated repair code
+                # one extra LLM call if repair code was generated
                 if step.get("repair_raw_response") is not None:
                     total_model_calls += 1
+
 
     # evaluate predictions using the official task evaluator
     try:
@@ -748,17 +854,39 @@ def main():
             else 0
         ),
         "semantic_react_repaired_examples": sum(
-            1
-            for item in logs
-            for step in item.get("semantic_react_steps", [])
-            if step.get("repair_raw_response") is not None
-        ),
-        "semantic_react_rejected_examples": sum(
-            1
-            for item in logs
-            for step in item.get("semantic_react_steps", [])
-            if step.get("accepted") is False
-        ),
+    1
+    for item in logs
+    for step in item.get("semantic_react_steps", [])
+    if step.get("repair_raw_response") is not None
+    ),
+
+    "semantic_react_accept_examples": sum(
+        1
+        for item in logs
+        for step in item.get("semantic_react_steps", [])
+        if step.get("decision") == "accept"
+    ),
+
+    "semantic_react_evidence_examples": sum(
+        1
+        for item in logs
+        for step in item.get("semantic_react_steps", [])
+        if step.get("decision") == "need_evidence"
+    ),
+
+    "semantic_react_repair_decisions": sum(
+        1
+        for item in logs
+        for step in item.get("semantic_react_steps", [])
+        if step.get("decision") == "repair"
+    ),
+
+    "semantic_react_non_accept_decisions": sum(
+        1
+        for item in logs
+        for step in item.get("semantic_react_steps", [])
+        if step.get("decision") in {"need_evidence", "repair"}
+    ),
 
         "indices_file": args.indices_file,
         "selected_indices": selected_indices,

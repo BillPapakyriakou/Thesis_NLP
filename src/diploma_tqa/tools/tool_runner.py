@@ -137,14 +137,17 @@ def parse_react_plan(raw: str, max_tool_calls: int = 3) -> dict:
     }
 
 
-def parse_semantic_critic(raw: str) -> dict:
+def parse_semantic_critic(raw: str, max_tool_calls: int = 3) -> dict:
     obj = extract_json_object(raw)
 
     if not isinstance(obj, dict):
         return {
+            "decision": "accept",
             "accept": True,
             "reason": "Invalid critic JSON; accepting original prediction.",
             "error_type": "none",
+            "answer_contract": {},
+            "verification_tool_calls": [],
             "repair_instruction": "",
             "must_use_columns": [],
             "avoid_columns": [],
@@ -157,14 +160,43 @@ def parse_semantic_critic(raw: str) -> dict:
             return []
         return [str(x) for x in value if isinstance(x, (str, int, float))]
 
-    accept = obj.get("accept", True)
-    if not isinstance(accept, bool):
-        accept = True
+    decision = str(obj.get("decision", "") or "").strip().lower()
+
+    if decision not in {"accept", "need_evidence", "repair"}:
+        accept = obj.get("accept", True)
+        if isinstance(accept, bool):
+            decision = "accept" if accept else "repair"
+        else:
+            decision = "accept"
+
+    calls = obj.get("verification_tool_calls", [])
+    valid_calls = []
+
+    if isinstance(calls, list):
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+
+            name = call.get("name")
+            args = call.get("args", {})
+
+            if name in {"find_columns", "profile_column", "find_values"} and isinstance(args, dict):
+                valid_calls.append({"name": name, "args": args})
+
+            if len(valid_calls) >= max_tool_calls:
+                break
+
+    answer_contract = obj.get("answer_contract", {})
+    if not isinstance(answer_contract, dict):
+        answer_contract = {}
 
     return {
-        "accept": accept,
+        "decision": decision,
+        "accept": decision == "accept",
         "reason": str(obj.get("reason", "") or ""),
         "error_type": str(obj.get("error_type", "none") or "none"),
+        "answer_contract": answer_contract,
+        "verification_tool_calls": valid_calls,
         "repair_instruction": str(obj.get("repair_instruction", "") or ""),
         "must_use_columns": clean_string_list(obj.get("must_use_columns", [])),
         "avoid_columns": clean_string_list(obj.get("avoid_columns", [])),
