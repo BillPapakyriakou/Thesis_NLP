@@ -422,13 +422,6 @@ def main():
     )
 
     parser.add_argument(
-        "--post-code-react-mode",
-        choices=["none", "semantic-critic"],
-        default="none",
-        help="Optional post-execution semantic ReAct critic. Runs after successful code execution.",
-    )
-
-    parser.add_argument(
         "--post-code-react-max-retries",
         type=int,
         default=1,
