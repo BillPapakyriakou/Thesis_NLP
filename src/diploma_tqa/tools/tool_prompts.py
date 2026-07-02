@@ -68,12 +68,11 @@ def make_react_tool_planning_prompt(row, df, previous_observations="", step=1, m
     return f"""
 You may inspect the dataframe before Pandas code generation.
 
-Your goal is to gather only the missing information needed to answer the question.
-Use tools only if they help identify exact column names, understand column values,
-or match concrete entities to cell values.
+Your goal is to gather only the missing evidence needed to answer the question correctly.
+Use tools only to identify exact column names, inspect column values/formats, or match literal question values to actual cell values.
 
 This is an iterative planning step. Use previous observations to decide whether another tool call is useful.
-If enough information is already available, stop.
+Do not answer the question. Do not write code.
 
 Question:
 {question}
@@ -97,13 +96,14 @@ Available tools:
 
 2. profile_column(column)
    - Use this to inspect dtype, sample values, top values, and numeric summary.
+   - Use this when the answer depends on value format, numeric range, common values, dictionary-like strings, maximum/minimum, top-k, average, or most/least common values.
    - The column argument must be an exact column name from Available columns.
    - Example: {{"name": "profile_column", "args": {{"column": "author_name"}}}}
 
 3. find_values(column, query)
-   - Match a literal value/entity from the question to cell values in a known column.
-   - Use for quoted titles, person names, countries, cities, organizations, products, codes, or exact phrases.
-   - Do not use for operations or abstract concepts such as year, date, rating, count, average, maximum, minimum, top, first, amount, contract, procurement, category, or distribution.
+   - Match a literal value/entity from the question to actual cell values in a known column.
+   - Use for concrete cell values such as quoted titles, person names, countries, cities, organizations, products, codes, categories, labels, exact phrases, or literal years/dates used as filters.
+   - Do not use for operations or abstract column meanings such as count, average, maximum, minimum, top-k, distribution, amount, or "first three letters".
    - The column must be an exact column name from Available columns.
    - Example: {{"name": "find_values", "args": {{"column": "title", "query": "value with a view"}}}}
 
@@ -113,41 +113,54 @@ Rules:
 - Tool arguments must use exact column names from Available columns. Never use guessed column names.
 - Request at most {max_tool_calls} tool calls.
 - Request only tool calls that reduce uncertainty before code generation.
-- Return no tool calls only when the relevant columns and values are already obvious.
 - Use multiple tool calls only when they answer different uncertainties.
 - Prefer find_columns when unsure about an exact column name.
-- Prefer profile_column when the answer depends on value format, distribution, numeric range, common values, maximum, minimum, top-k, average, or most/least common values.
-- Prefer find_values only when the question contains a literal cell value such as a quoted title, person name, country, city, organization, product, code, or exact phrase.
-- Do not use find_values for operations, comparisons, aggregations, column meanings, or generic words from the question.
+- Prefer profile_column when column values, formats, ranges, common values, or nested/dictionary-like values matter.
+- Prefer find_values when the question contains a literal cell value that may need exact matching.
 - Never use placeholders such as "<result from previous tool call>" as column names.
 
-Additional ReAct rules:
-- Do not answer the question.
-- Do not write code.
-- The "thought" field must be one short sentence describing what uncertainty remains.
-- Maintain a "current_plan" object that summarizes what the coder should do.
-- The current_plan must be based only on the question, available columns, dtypes, and observations.
-- If several columns could match the question, inspect or compare them before choosing.
-- Do not commit to one column only because find_columns returned it.
-- Use the "avoid" field for columns or interpretations that look misleading.
-- If enough information is available, return stop=true with no tool calls and a complete current_plan.
-- Otherwise return stop=false with useful tool calls and the best current_plan so far.
+Planning rules:
+- Do not convert uncertain observations into facts.
+- The plan must separate computation columns from return columns.
+- If the question asks for a label/name/category, identify the return column that contains that label.
+- If the question asks for numeric values or IDs, do not choose a name/label column unless observations prove that it stores the requested numeric values.
+- For "largest/smallest values", sort the values themselves unless the question says most common, most frequent, or highest count.
+- For "most common/frequent", use value counts/mode.
+- For "highest/maximum X by group/entity", rank by X but return the requested entity/label column, not the dataframe index.
+- For boolean questions about sale/discount/availability/status, prefer explicit status/flag columns over numeric proxy columns.
+- If a computation column and a return/display column differ, include a value_mappings entry.
+- Use avoid for misleading columns or interpretations, with a reason.
+
+Stopping rule:
+Return stop=true only when:
+- needed filter/group/aggregate/sort/return columns are known,
+- literal filter values are matched or not needed,
+- the operation type is clear,
+- the expected answer representation is clear,
+- no useful tool call remains.
+
+Otherwise return stop=false with useful tool calls and the best evidence plan so far.
 
 Return JSON in this format:
 {{
-  "thought": "I need to compare the possible weekday columns.",
+  "remaining_uncertainty": "Need to inspect whether the candidate column stores numeric ids or labels.",
   "tool_calls": [
-    {{"name": "profile_column", "args": {{"column": "Weekday"}}}},
-    {{"name": "profile_column", "args": {{"column": "Weekday_1"}}}}
+    {{"name": "profile_column", "args": {{"column": "some_exact_column"}}}}
   ],
   "stop": false,
   "current_plan": {{
-    "relevant_columns": ["Weekday", "Weekday_1"],
+    "operation_type": "unknown | unique_values | sort_values_take_k | value_counts_top_k | argmax_return_label | groupby_aggregate_return_label | boolean_any_condition | filter_then_aggregate",
+    "columns": {{
+      "filter": [],
+      "group_by": [],
+      "aggregate": [],
+      "sort_by": [],
+      "return": []
+    }},
     "value_mappings": [],
-    "operation": "Choose the column whose values are weekday names.",
-    "avoid": ["Do not return numeric weekday ids if the question asks for names."]
+    "matched_values": [],
+    "avoid": [],
+    "warnings": []
   }}
 }}
-
-Return JSON:
 """.strip()
