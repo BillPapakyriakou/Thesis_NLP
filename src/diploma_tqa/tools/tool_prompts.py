@@ -375,3 +375,169 @@ Rules:
 
 Corrected answer(df) body:
 """.strip()
+
+
+def make_post_code_react_action_prompt(row, df, generated_code, prediction, tool_observations=""):
+    question = row["question"]
+    answer_type = row.get("type", "unknown")
+    columns = list(df.columns)
+    dtypes = {c: str(df[c].dtype) for c in df.columns}
+
+    return f"""
+You are debugging a Pandas table-QA answer.
+
+The code executed successfully, but executable code can still use the wrong column, wrong value, or wrong operation.
+
+Your job is to choose at most one useful inspection action before deciding whether to keep or rewrite.
+
+Question:
+{question}
+
+Expected answer type:
+{answer_type}
+
+Available columns:
+{columns}
+
+Dtypes:
+{dtypes}
+
+Pre-code inspection observations:
+{tool_observations if tool_observations else "None"}
+
+Generated code:
+{generated_code}
+
+Prediction:
+{prediction}
+
+Available actions:
+1. profile_used_columns
+   - Inspect the dataframe columns used by the generated code.
+   - Prefer this action when unsure whether the code used sensible columns.
+
+2. profile_column(column)
+   - Inspect one exact column.
+   - Use this when a likely relevant column was not used by the generated code.
+
+3. find_values(column, query)
+   - Search for a literal entity/value from the question in one exact column.
+   - Use only for concrete names, titles, places, dates, labels, codes, or quoted values.
+
+4. accept
+   - Use only if the code is obviously aligned with the question and no inspection would help.
+
+Rules:
+- Return valid JSON only.
+- Do not write code.
+- Do not answer the original question.
+- Choose only one action.
+- Prefer profile_used_columns unless another action is clearly more useful.
+- Do not use find_values for operations such as count, max, average, most common, or total.
+
+Return JSON:
+{{
+  "thought": "one short sentence explaining what you want to check",
+  "action": {{"name": "profile_used_columns | profile_column | find_values | accept", "args": {{}}}}
+}}
+""".strip()
+
+
+def make_post_code_react_decision_prompt(row, df, generated_code, prediction, observation):
+    question = row["question"]
+    answer_type = row.get("type", "unknown")
+    columns = list(df.columns)
+    dtypes = {c: str(df[c].dtype) for c in df.columns}
+
+    return f"""
+You inspected the dataframe after code execution.
+
+Decide whether to keep the current answer or rewrite the code once.
+
+Question:
+{question}
+
+Expected answer type:
+{answer_type}
+
+Available columns:
+{columns}
+
+Dtypes:
+{dtypes}
+
+Generated code:
+{generated_code}
+
+Prediction:
+{prediction}
+
+Observation:
+{observation}
+
+Decision rules:
+- Use keep if the observation supports that the code used the right columns, values, operation, and return type.
+- Use rewrite if the code likely used the wrong column, wrong value, wrong operation, wrong return type, or produced NaN/null.
+- If rewriting, give one concrete instruction to the coder.
+- Do not answer the original question directly.
+- Return valid JSON only.
+
+Return JSON:
+{{
+  "decision": "keep | rewrite",
+  "reason": "one short reason",
+  "rewrite_instruction": "empty if keep; concrete instruction if rewrite"
+}}
+""".strip()
+
+
+def make_post_code_react_repair_prompt(row, df, previous_code, previous_prediction, observation, rewrite_instruction):
+    question = row["question"]
+    answer_type = row.get("type", "unknown")
+    columns = list(df.columns)
+    dtypes = {c: str(df[c].dtype) for c in df.columns}
+    preview = df.head(5).to_string(index=False)
+
+    return f"""
+Rewrite the body of answer(df).
+
+The previous code executed, but post-code inspection found a likely semantic mistake.
+
+Question:
+{question}
+
+Expected answer type:
+{answer_type}
+
+Available columns:
+{columns}
+
+Dtypes:
+{dtypes}
+
+First 5 rows:
+{preview}
+
+Previous code:
+{previous_code}
+
+Previous prediction:
+{previous_prediction}
+
+Post-code observation:
+{observation}
+
+Rewrite instruction:
+{rewrite_instruction}
+
+Rules:
+- Return only the body of answer(df), not a full function definition.
+- Do not write markdown.
+- Use only exact dataframe column names.
+- Return exactly the requested answer value.
+- Do not return a dataframe index unless the question explicitly asks for an index.
+- If ranking or comparing numeric values, convert with pd.to_numeric(..., errors="coerce").
+- Always include an explicit return statement.
+
+Corrected answer(df) body:
+""".strip()

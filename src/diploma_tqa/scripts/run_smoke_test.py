@@ -19,16 +19,18 @@ from diploma_tqa.tools.dataframe_tools import find_columns
 from diploma_tqa.tools.tool_prompts import (
     make_tool_planning_prompt,
     make_react_tool_planning_prompt,
-    make_semantic_react_critic_prompt,
-    make_semantic_react_repair_prompt,
+    make_post_code_react_action_prompt,
+    make_post_code_react_decision_prompt,
+    make_post_code_react_repair_prompt,
 )
 
 from diploma_tqa.tools.tool_runner import (
     parse_tool_calls,
     parse_react_plan,
-    parse_semantic_critic,
     execute_tool_calls,
     format_react_plan,
+    parse_json_object,
+    execute_post_code_react_action,
 )
 
 def make_json_safe(obj):
@@ -67,6 +69,127 @@ def is_execution_error(pred) -> bool:
         pred.startswith("__CODE_ERROR__")
         or pred.startswith("__TIMEOUT__")
     )
+
+
+def run_simple_post_code_react_loop(
+    row,
+    df,
+    llm,
+    code,
+    pred,
+    tool_observations,
+    attempts,
+    args,
+):
+    post_react_steps = []
+
+    success = not is_execution_error(pred)
+    error = None if success else str(pred)
+
+    if args.post_code_react_mode != "simple-inspect" or not success:
+        return code, pred, success, error, post_react_steps, ""
+
+    # 1. Ask for one inspection action.
+    action_prompt = make_post_code_react_action_prompt(
+        row=row,
+        df=df,
+        generated_code=code,
+        prediction=pred,
+        tool_observations=tool_observations,
+    )
+
+    action_raw = llm.generate(action_prompt)
+    action_result = parse_json_object(action_raw)
+    action = action_result.get("action", {"name": "profile_used_columns", "args": {}})
+
+    if not isinstance(action, dict):
+        action = {"name": "profile_used_columns", "args": {}}
+
+    action_name = action.get("name", "profile_used_columns")
+
+    if action_name == "accept":
+        post_react_steps.append({
+            "stage": "post_code_react_action",
+            "raw_response": action_raw,
+            "action_result": action_result,
+            "action": action,
+            "observation": "",
+            "decision_result": {"decision": "keep", "reason": "Action chose accept."},
+        })
+        return code, pred, success, error, post_react_steps, ""
+
+    # 2. Execute the action.
+    observation = execute_post_code_react_action(action=action, df=df, code=code)
+
+    # 3. Decide keep vs rewrite from the observation.
+    decision_prompt = make_post_code_react_decision_prompt(
+        row=row,
+        df=df,
+        generated_code=code,
+        prediction=pred,
+        observation=observation,
+    )
+
+    decision_raw = llm.generate(decision_prompt)
+    decision_result = parse_json_object(decision_raw)
+    decision = decision_result.get("decision", "keep")
+
+    step_log = {
+        "stage": "post_code_react",
+        "action_raw_response": action_raw,
+        "action_result": action_result,
+        "action": action,
+        "observation": observation,
+        "decision_raw_response": decision_raw,
+        "decision_result": decision_result,
+        "decision": decision,
+    }
+
+    # 4. Keep old answer unless rewrite is explicitly requested.
+    if decision != "rewrite":
+        post_react_steps.append(step_log)
+        return code, pred, success, error, post_react_steps, observation
+
+    # 5. Rewrite once.
+    rewrite_instruction = decision_result.get("rewrite_instruction", "Rewrite the code using the observation.")
+
+    repair_prompt = make_post_code_react_repair_prompt(
+        row=row,
+        df=df,
+        previous_code=code,
+        previous_prediction=pred,
+        observation=observation,
+        rewrite_instruction=rewrite_instruction,
+    )
+
+    repair_raw = llm.generate(repair_prompt)
+    repair_code = extract_answer_body(repair_raw)
+    repair_pred = execute_answer_body(repair_code, df)
+
+    step_log.update({
+        "repair_raw_response": repair_raw,
+        "repair_code": repair_code,
+        "repair_prediction": repair_pred,
+        "repair_success": not is_execution_error(repair_pred),
+    })
+
+    post_react_steps.append(step_log)
+
+    attempts.append({
+        "stage": "post_code_react_rewrite",
+        "raw_response": repair_raw,
+        "code": repair_code,
+        "prediction": repair_pred,
+        "observation": observation,
+        "rewrite_instruction": rewrite_instruction,
+    })
+
+    if not is_execution_error(repair_pred):
+        return repair_code, repair_pred, True, None, post_react_steps, observation
+
+    # Rewrite crashed: keep old executed prediction.
+    step_log["kept_previous_prediction"] = True
+    return code, pred, success, error, post_react_steps, observation
 
 def tool_call_key(call):
     return json.dumps(call, sort_keys=True, ensure_ascii=False)
@@ -310,6 +433,13 @@ def main():
         type=int,
         default=1,
         help="Maximum number of semantic critic repair attempts after successful execution.",
+    )
+
+    parser.add_argument(
+        "--post-code-react-mode",
+        choices=["none", "semantic-critic", "simple-inspect"],
+        default="none",
+        help="Optional post-execution ReAct. simple-inspect runs one inspection action then optionally rewrites once.",
     )
 
     args = parser.parse_args()
@@ -667,24 +797,44 @@ def main():
                 success = True
                 error = None
 
-                (
-                    code,
-                    pred,
-                    success,
-                    error,
-                    semantic_react_steps,
-                    post_code_observations,
-                ) = run_semantic_critic_loop(
-                    row=row,
-                    df=df,
-                    llm=llm,
-                    code=code,
-                    pred=pred,
-                    tool_observations=tool_observations,
-                    attempts=attempts,
-                    args=args,
-                    react_max_tool_calls=REACT_MAX_TOOL_CALLS,
-                )
+                if args.post_code_react_mode == "simple-inspect":
+                    (
+                        code,
+                        pred,
+                        success,
+                        error,
+                        post_code_react_steps,
+                        post_code_observations,
+                    ) = run_simple_post_code_react_loop(
+                        row=row,
+                        df=df,
+                        llm=llm,
+                        code=code,
+                        pred=pred,
+                        tool_observations=tool_observations,
+                        attempts=attempts,
+                        args=args,
+                    )
+                    semantic_react_steps = post_code_react_steps
+                else:
+                    (
+                        code,
+                        pred,
+                        success,
+                        error,
+                        semantic_react_steps,
+                        post_code_observations,
+                    ) = run_semantic_critic_loop(
+                        row=row,
+                        df=df,
+                        llm=llm,
+                        code=code,
+                        pred=pred,
+                        tool_observations=tool_observations,
+                        attempts=attempts,
+                        args=args,
+                        react_max_tool_calls=REACT_MAX_TOOL_CALLS,
+                    )
 
 
         except Exception as e:

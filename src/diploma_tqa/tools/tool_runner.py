@@ -1,7 +1,7 @@
 import json
 import re
 
-from diploma_tqa.tools.dataframe_tools import find_columns, profile_column, find_values
+from diploma_tqa.tools.dataframe_tools import find_columns, profile_column, find_values, profile_used_columns
 
 
 def extract_json_object(text: str) -> dict:
@@ -246,3 +246,52 @@ def execute_tool_calls(tool_calls: list[dict], df) -> str:
         return ""
 
     return "\n\n".join(observations)
+
+
+def parse_json_object(raw: str) -> dict:
+    """Parse the first JSON object from an LLM response."""
+    if not raw:
+        return {}
+
+    text = raw.strip()
+
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return {}
+
+    try:
+        return json.loads(match.group(0))
+    except Exception:
+        return {}
+
+
+def execute_post_code_react_action(action: dict, df, code: str) -> str:
+    name = action.get("name", "accept")
+    args = action.get("args", {}) or {}
+
+    try:
+        if name == "accept":
+            return "No inspection requested."
+
+        if name == "profile_used_columns":
+            return profile_used_columns(df, code)
+
+        if name == "profile_column":
+            return profile_column(df, args.get("column", ""))
+
+        if name == "find_values":
+            return find_values(
+                df=df,
+                column=args.get("column", ""),
+                query=args.get("query", ""),
+            )
+
+        return f"Unknown post-code ReAct action: {name}"
+
+    except Exception as e:
+        return f"Post-code ReAct action error: {e}"

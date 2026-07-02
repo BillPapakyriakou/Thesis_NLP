@@ -112,6 +112,35 @@ def profile_column(df: pd.DataFrame, column: str, max_values: int = 8) -> str:
 
     return "\n".join(lines)
 
+def profile_used_columns(df: pd.DataFrame, code: str, max_columns: int = 6) -> str:
+    """Profile dataframe columns that are explicitly referenced by generated code."""
+
+    used_columns = []
+
+    for column in df.columns:
+        single_quoted = repr(column)
+        double_quoted = '"' + str(column).replace('"', '\\"') + '"'
+
+        if single_quoted in code or double_quoted in code:
+            used_columns.append(column)
+
+    lines = ["profile_used_columns result:"]
+
+    if not used_columns:
+        lines.append("- No exact dataframe column references were detected in the code.")
+        return "\n".join(lines)
+
+    lines.append(f"- detected columns: {used_columns[:max_columns]}")
+
+    for column in used_columns[:max_columns]:
+        lines.append("")
+        lines.append(profile_column(df, column, max_values=8))
+
+    if len(used_columns) > max_columns:
+        lines.append(f"\n- skipped {len(used_columns) - max_columns} additional used columns.")
+
+    return "\n".join(lines)
+
 def find_values(
     df: pd.DataFrame,
     column: str,
