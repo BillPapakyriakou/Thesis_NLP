@@ -151,3 +151,156 @@ Return JSON in this format:
 
 Return JSON:
 """.strip()
+
+
+def make_semantic_react_critic_prompt(
+    question,
+    answer_type,
+    columns,
+    dtypes,
+    preview,
+    tool_observations,
+    generated_code,
+    prediction,
+    execution_error=None,
+):
+    return f"""
+You are a semantic critic for a Pandas table-question-answering system.
+
+Your job is to decide whether the generated code and prediction actually answer the question.
+Do not solve the whole problem from scratch unless the prediction is clearly wrong.
+Do not write final code unless repair is needed.
+
+Question:
+{question}
+
+Expected answer type:
+{answer_type}
+
+Available columns:
+{columns}
+
+Dtypes:
+{dtypes}
+
+Data preview:
+{preview}
+
+Inspection observations:
+{tool_observations}
+
+Generated code:
+{generated_code}
+
+Execution error:
+{execution_error if execution_error else "None"}
+
+Prediction:
+{prediction}
+
+Check for these common semantic errors:
+- The code returns a dataframe index instead of the requested label/name/value.
+- The code uses a numeric id column when the question asks for a name/label/month/weekday.
+- The code uses a name/label column when the question asks for numerical values or ids.
+- The code uses value_counts/mode when the question asks for largest/smallest values.
+- The code sorts values when the question asks for most common/most frequent.
+- The code ranks by one column but returns the wrong column.
+- The code uses a numeric proxy column when an explicit status/flag column exists, such as sale/discount/availability/status.
+- The code ignores a literal entity or year/date value from the question that should be matched to the table.
+- The code returns a value with the wrong expected answer type.
+- The code handles dictionary-like string columns incorrectly.
+
+Return valid JSON only:
+{{
+  "accept": true or false,
+  "reason": "one short explanation",
+  "error_type": "none | wrong_column | wrong_operation | wrong_return_column | wrong_value_mapping | wrong_answer_type | entity_mismatch | code_error | uncertain",
+  "repair_instruction": "If accept=false, give a concrete instruction for regenerating the code. If accept=true, empty string.",
+  "must_use_columns": [],
+  "avoid_columns": [],
+  "must_return": "Describe what the code should return, not the answer value."
+}}
+""".strip()
+
+
+def make_semantic_react_repair_prompt(
+    row,
+    df,
+    previous_code,
+    previous_prediction,
+    critic_result,
+    tool_observations="",
+):
+    question = row["question"]
+    answer_type = row.get("type", "unknown")
+
+    columns = list(df.columns)
+    dtypes = {c: str(df[c].dtype) for c in df.columns}
+    preview = df.head(5).to_string(index=False)
+
+    critic_reason = critic_result.get("reason", "")
+    repair_instruction = critic_result.get("repair_instruction", "")
+    must_use_columns = critic_result.get("must_use_columns", [])
+    avoid_columns = critic_result.get("avoid_columns", [])
+    must_return = critic_result.get("must_return", "")
+
+    return f"""
+You previously wrote Pandas code for a table question, and it executed successfully.
+However, a semantic critic found that the code may not answer the question correctly.
+
+Rewrite the answer(df) function body.
+
+Question:
+{question}
+
+Expected answer type:
+{answer_type}
+
+Available columns:
+{columns}
+
+Dtypes:
+{dtypes}
+
+Data preview:
+{preview}
+
+Inspection observations:
+{tool_observations if tool_observations else "None"}
+
+Previous code:
+{previous_code}
+
+Previous prediction:
+{previous_prediction}
+
+Semantic critic reason:
+{critic_reason}
+
+Repair instruction:
+{repair_instruction}
+
+Must use columns if relevant:
+{must_use_columns}
+
+Avoid columns/interpreations if relevant:
+{avoid_columns}
+
+The corrected code must return:
+{must_return}
+
+Important rules:
+- Return only the body of answer(df), not a full function definition.
+- Do not use markdown.
+- Use only columns that exist in the dataframe.
+- Do not return dataframe indices unless the question explicitly asks for indices.
+- If ranking by one column but the question asks for a name/category/value, return the requested column value, not the index.
+- If the question asks for numerical values or IDs, do not return name/label columns.
+- If the question asks for names/labels/months/weekdays, do not return numeric ID columns unless those are the only available representation.
+- If the question asks for largest/smallest values, sort the values themselves unless it says most common or most frequent.
+- If the question asks for most common/frequent, use value_counts or mode.
+- For boolean sale/discount/status questions, prefer explicit flag/status columns over numeric proxy columns.
+- Return a value compatible with the expected answer type.
+
+Corrected answer(df) body:
+""".strip()

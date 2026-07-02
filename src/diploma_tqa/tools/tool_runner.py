@@ -136,6 +136,43 @@ def parse_react_plan(raw: str, max_tool_calls: int = 3) -> dict:
         "parse_error": None,
     }
 
+
+def parse_semantic_critic(raw: str) -> dict:
+    obj = extract_json_object(raw)
+
+    if not isinstance(obj, dict):
+        return {
+            "accept": True,
+            "reason": "Invalid critic JSON; accepting original prediction.",
+            "error_type": "none",
+            "repair_instruction": "",
+            "must_use_columns": [],
+            "avoid_columns": [],
+            "must_return": "",
+            "parse_error": "Invalid JSON object",
+        }
+
+    def clean_string_list(value):
+        if not isinstance(value, list):
+            return []
+        return [str(x) for x in value if isinstance(x, (str, int, float))]
+
+    accept = obj.get("accept", True)
+    if not isinstance(accept, bool):
+        accept = True
+
+    return {
+        "accept": accept,
+        "reason": str(obj.get("reason", "") or ""),
+        "error_type": str(obj.get("error_type", "none") or "none"),
+        "repair_instruction": str(obj.get("repair_instruction", "") or ""),
+        "must_use_columns": clean_string_list(obj.get("must_use_columns", [])),
+        "avoid_columns": clean_string_list(obj.get("avoid_columns", [])),
+        "must_return": str(obj.get("must_return", "") or ""),
+        "parse_error": None,
+    }
+
+
 def execute_tool_calls(tool_calls: list[dict], df) -> str:
     # runs the requested tool calls and returns the output as text
 

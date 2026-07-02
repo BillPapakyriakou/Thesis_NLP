@@ -10,8 +10,6 @@ ABSTRACT_VALUE_QUERY_TERMS = [
     "top", "first", "last",
     "most common", "least common", "most frequent", "least frequent",
     "average", "mean", "count", "total", "sum",
-    "year", "date", "rating", "amount",
-    "contract", "procurement", "category",
     "greater than", "less than", "more than", "fewer than",
     "above", "below",
 ]
@@ -121,10 +119,8 @@ def find_values(
     top_k: int = 5,
     min_score: float = 0.65,
 ) -> str:
-
-    # searches inside a dataframe column for values similar to the query -
-    # helps when question mentions an entity/value and the model needs
-    # to find the closest matching value in the table
+    # Search inside a dataframe column for values similar to the query.
+    # Returns unique candidate values with scores and counts.
 
     if column not in df.columns:
         return f"find_values({column!r}, {query!r}) error: column does not exist."
@@ -137,39 +133,60 @@ def find_values(
     if looks_like_abstract_value_query(query):
         return (
             f"find_values(column={column!r}, query={query!r}) skipped: "
-            "query looks like an operation, comparison, aggregation, or abstract concept, "
+            "query looks like an operation, comparison, or aggregation, "
             "not a literal cell value."
         )
 
     series = df[column].dropna()
 
-    scored = []
+    query_tokens = set(query_norm.split())
+    best_by_value = {}
 
     for idx, value in series.items():
         value_str = str(value)
         value_norm = normalize_text(value_str)
 
+        if not value_norm:
+            continue
+
+        value_tokens = set(value_norm.split())
         score = 0.0
 
-        # strong signal: exact substring match.
+        # Strong signal: exact normalized match.
+        if query_norm == value_norm:
+            score += 5.0
+
+        # Strong signal: substring match.
         if query_norm and query_norm in value_norm:
             score += 3.0
 
         if value_norm and value_norm in query_norm:
             score += 2.0
 
-        # medium signal: shared words.
-        query_tokens = set(query_norm.split())
-        value_tokens = set(value_norm.split())
+        # Medium signal: shared words.
         score += 1.5 * len(query_tokens & value_tokens)
 
-        # weak signal: fuzzy string similarity.
+        # Weak signal: fuzzy string similarity.
         score += similarity(query_norm, value_norm)
 
         if score >= min_score:
-            scored.append((score, idx, value_str))
+            rec = best_by_value.get(value_str)
+            if rec is None:
+                best_by_value[value_str] = {
+                    "score": score,
+                    "first_row": idx,
+                    "count": 1,
+                }
+            else:
+                rec["score"] = max(rec["score"], score)
+                rec["count"] += 1
 
-    scored.sort(key=lambda item: item[0], reverse=True)
+    scored = [
+        (rec["score"], value_str, rec["first_row"], rec["count"])
+        for value_str, rec in best_by_value.items()
+    ]
+
+    scored.sort(key=lambda item: (item[0], item[3]), reverse=True)
 
     lines = [f"find_values(column={column!r}, query={query!r}) results:"]
 
@@ -177,7 +194,9 @@ def find_values(
         lines.append("- No high-confidence value matches found.")
         return "\n".join(lines)
 
-    for score, idx, value in scored[:top_k]:
-        lines.append(f"- row {idx}: {value!r} (score={score:.2f})")
+    for score, value, first_row, count in scored[:top_k]:
+        lines.append(
+            f"- value {value!r} (score={score:.2f}, count={count}, first_row={first_row})"
+        )
 
     return "\n".join(lines)
