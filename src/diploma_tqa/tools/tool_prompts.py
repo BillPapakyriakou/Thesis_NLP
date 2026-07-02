@@ -538,6 +538,11 @@ Rules:
 - Do not return a dataframe index unless the question explicitly asks for an index.
 - If ranking or comparing numeric values, convert with pd.to_numeric(..., errors="coerce").
 - Always include an explicit return statement.
+- Use this exact structure whenever possible:
+  result = ...
+  return result
+- Do not write a bare expression followed by return result.
+- Every returned variable must be assigned in the code.
 
 Corrected answer(df) body:
 """.strip()
