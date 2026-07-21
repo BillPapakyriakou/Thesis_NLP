@@ -44,41 +44,65 @@ from diploma_tqa.schema.semantic_state import (
     build_semantic_state,
 )
 
-def make_json_safe(obj):
-    # convert numpy/pandas objects into Python objects
-    if isinstance(obj, pd.Categorical):
-        return obj.tolist()
+def make_json_safe(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        if isinstance(value, float) and not np.isfinite(value):
+            return None
+        return value
 
-    if isinstance(obj, pd.CategoricalDtype):
-        return str(obj)
-    if isinstance(obj, dict):
-        return {str(k): make_json_safe(v) for k, v in obj.items()}
+    if value is pd.NA or value is pd.NaT:
+        return None
 
-    if isinstance(obj, list):
-        return [make_json_safe(v) for v in obj]
+    if isinstance(value, np.generic):
+        return make_json_safe(value.item())
 
-    if isinstance(obj, tuple):
-        return [make_json_safe(v) for v in obj]
+    if isinstance(value, pd.Categorical):
+        return [make_json_safe(x) for x in value.tolist()]
 
-    if isinstance(obj, np.ndarray):
-        return make_json_safe(obj.tolist())
+    if isinstance(value, pd.CategoricalDtype):
+        return {
+            "type": "category",
+            "categories": [
+                make_json_safe(x) for x in value.categories.tolist()
+            ],
+            "ordered": bool(value.ordered),
+        }
 
-    if isinstance(obj, np.integer):
-        return int(obj)
+    if isinstance(value, pd.Series):
+        return [make_json_safe(x) for x in value.tolist()]
 
-    if isinstance(obj, np.floating):
-        return float(obj)
+    if isinstance(value, pd.Index):
+        return [make_json_safe(x) for x in value.tolist()]
 
-    if isinstance(obj, np.bool_):
-        return bool(obj)
+    if isinstance(value, np.ndarray):
+        return [make_json_safe(x) for x in value.tolist()]
 
-    if isinstance(obj, pd.Series):
-        return make_json_safe(obj.tolist())
+    if isinstance(value, pd.DataFrame):
+        return [
+            {str(k): make_json_safe(v) for k, v in row.items()}
+            for row in value.to_dict(orient="records")
+        ]
 
-    if isinstance(obj, pd.DataFrame):
-        return make_json_safe(obj.to_dict(orient="records"))
+    if isinstance(value, dict):
+        return {
+            str(k): make_json_safe(v)
+            for k, v in value.items()
+        }
 
-    return obj
+    if isinstance(value, (list, tuple, set)):
+        return [make_json_safe(x) for x in value]
+
+    if isinstance(value, (pd.Timestamp, datetime.datetime, datetime.date)):
+        return value.isoformat()
+
+    if isinstance(value, pd.Interval):
+        return str(value)
+
+    if isinstance(value, Path):
+        return str(value)
+
+    # Last-resort representation so logging cannot destroy a completed run.
+    return repr(value)
 
 def is_execution_error(pred) -> bool:
     # check whether model prediction is an error
