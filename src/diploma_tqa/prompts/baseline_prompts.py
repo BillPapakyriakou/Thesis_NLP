@@ -51,6 +51,40 @@ Semantic-state instructions:
   not supported by the question.
 - If certainty is "ambiguous", resolve the ambiguity conservatively from the
   question and table evidence.
+- When aggregation is not "none", apply that exact aggregation to the
+  measure column.
+
+- For grouped_argmax or grouped_argmin:
+  1. group by the group or group_and_return column,
+  2. apply the specified aggregation to the measure column,
+  3. select the highest or lowest group,
+  4. return the requested label or value.
+
+- aggregation="mode" means the most frequent value, not the numerically
+  largest value.
+
+- aggregation="nunique" means count distinct non-null values.
+
+- aggregation="count" normally means count rows or non-null values,
+  depending on the wording of the original question.
+
+- Do not replace a grouped operation with a row-level idxmax() or idxmin().
+
+Example semantic state:
+
+operation_family = grouped_argmax
+aggregation = mean
+group_and_return = Department
+measure = MonthlyIncome
+
+Required computation:
+
+df.groupby("Department")["MonthlyIncome"].mean().idxmax()
+
+Do not use:
+
+df.loc[df["MonthlyIncome"].idxmax(), "Department"]
+  
 """.strip()
 
         else:

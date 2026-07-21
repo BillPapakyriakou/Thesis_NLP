@@ -39,6 +39,18 @@ ALLOWED_OPERATIONS = {
     "unknown",
 }
 
+ALLOWED_AGGREGATIONS = {
+    "none",
+    "sum",
+    "mean",
+    "count",
+    "min",
+    "max",
+    "median",
+    "nunique",
+    "mode",
+}
+
 ALLOWED_ANSWER_KINDS = {
     "scalar_number",
     "scalar_label",
@@ -64,6 +76,8 @@ ALLOWED_FILTER_OPERATORS = {
     "contains",
     "in",
 }
+
+
 
 
 def dataframe_schema_summary(
@@ -137,6 +151,8 @@ Return exactly one JSON object with this structure:
                        grouped_argmax | grouped_argmin | comparison |
                        difference | ratio | top_k | unique_values |
                        existence | unknown",
+  "aggregation": "none | sum | mean | count | min | max |
+                median | nunique | mode",                     
   "filters": [
     {{
       "column": "exact dataframe column name",
@@ -169,7 +185,18 @@ Rules:
    answer_kind scalar_number.
 10. When uncertain, use certainty="ambiguous" and record the ambiguity rather
     than inventing an interpretation.
-11. Output JSON only. No Markdown and no explanation.
+11. Set aggregation according to the wording:
+    - "total", "sum", or "combined" -> sum
+    - "average", "mean", or "on average" -> mean
+    - "how many", "number of rows", or "count" -> count
+    - "different", "distinct", or "unique number of" -> nunique
+    - "most common" or "most frequent" -> mode
+    - "maximum value" -> max
+    - "minimum value" -> min
+    - "median" -> median   
+12. Use aggregation="none" for direct lookup, filtering, existence, raw-value
+    ranking, and other operations that do not aggregate rows.     
+13. Output JSON only. No Markdown and no explanation.
 """.strip()
 
 
@@ -177,10 +204,13 @@ def default_semantic_state() -> dict[str, Any]:
     return {
         "column_roles": [],
         "operation_family": "unknown",
+        "aggregation": "none",
         "filters": [],
         "answer_kind": "unknown",
         "certainty": "ambiguous",
-        "ambiguities": ["Semantic-state generation failed or was invalid."],
+        "ambiguities": [
+            "Semantic-state generation failed or was invalid."
+        ],
     }
 
 
@@ -250,6 +280,81 @@ def validate_semantic_state(
         operation = "unknown"
 
     validated["operation_family"] = operation
+
+    # Validate aggregation.
+    aggregation = state.get("aggregation", "none")
+
+    if aggregation not in ALLOWED_AGGREGATIONS:
+        errors.append(f"Invalid aggregation: {aggregation!r}")
+        aggregation = "none"
+
+    validated["aggregation"] = aggregation
+
+    # Validate consistency between operation and aggregation.
+    operations_that_can_aggregate = {
+        "count",
+        "aggregate",
+        "grouped_aggregate",
+        "grouped_argmax",
+        "grouped_argmin",
+        "comparison",
+        "difference",
+        "ratio",
+        "top_k",
+    }
+
+    if (
+            aggregation != "none"
+            and operation not in operations_that_can_aggregate
+    ):
+        errors.append(
+            f"Aggregation {aggregation!r} may be inconsistent with "
+            f"operation_family {operation!r}."
+        )
+
+    if (
+            operation in {
+        "aggregate",
+        "grouped_aggregate",
+        "grouped_argmax",
+        "grouped_argmin",
+    }
+            and aggregation == "none"
+    ):
+        errors.append(
+            f"operation_family {operation!r} normally requires "
+            "an explicit aggregation."
+        )
+
+    measure_columns = {
+        item["column"]
+        for item in validated_roles
+        if item["role"] == "measure"
+    }
+
+    if aggregation not in {"none", "count"} and not measure_columns:
+        errors.append(
+            f"Aggregation {aggregation!r} normally requires a measure column."
+        )
+
+    group_columns = {
+        item["column"]
+        for item in validated_roles
+        if item["role"] in {"group", "group_and_return"}
+    }
+
+    if (
+            operation in {
+        "grouped_aggregate",
+        "grouped_argmax",
+        "grouped_argmin",
+    }
+            and not group_columns
+    ):
+        errors.append(
+            f"operation_family {operation!r} requires a group or "
+            "group_and_return column."
+        )
 
     # Validate filters.
     validated_filters: list[dict[str, Any]] = []

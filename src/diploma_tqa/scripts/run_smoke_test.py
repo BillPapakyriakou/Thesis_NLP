@@ -38,6 +38,12 @@ from diploma_tqa.schema.semantic_state import (
     format_semantic_state, ALLOWED_OPERATIONS,
 )
 
+from diploma_tqa.schema.semantic_state import (
+    ALLOWED_AGGREGATIONS,
+    ALLOWED_OPERATIONS,
+    build_semantic_state,
+)
+
 def make_json_safe(obj):
     # convert numpy/pandas objects into Python objects
 
@@ -1098,6 +1104,32 @@ def main():
                 )
             )
             for operation in sorted(ALLOWED_OPERATIONS)
+        },
+
+        "semantic_state_aggregation_counts": {
+            aggregation: sum(
+                1
+                for item in logs
+                if (
+                        item.get("semantic_state")
+                        and item["semantic_state"].get("aggregation") == aggregation
+                )
+            )
+            for aggregation in sorted(ALLOWED_AGGREGATIONS)
+        },
+
+        "semantic_state_operation_aggregation_counts": {
+            f"{operation}:{aggregation}": sum(
+                1
+                for item in logs
+                if (
+                        item.get("semantic_state")
+                        and item["semantic_state"].get("operation_family") == operation
+                        and item["semantic_state"].get("aggregation") == aggregation
+                )
+            )
+            for operation in sorted(ALLOWED_OPERATIONS)
+            for aggregation in sorted(ALLOWED_AGGREGATIONS)
         },
 
         "max_retries": args.max_retries,
