@@ -42,49 +42,59 @@ Proposed semantic state:
 {semantic_state_json}
 
 Semantic-state instructions:
-- Treat this state as a planning aid, not as verified truth.
-- The original question remains the primary source of truth.
-- Use only exact DataFrame column names.
-- Ignore any part of the state that conflicts with the question, schema,
-  column dtypes, or tool observations.
-- Do not introduce filters, literals, aggregations, or return columns that are
-  not supported by the question.
-- If certainty is "ambiguous", resolve the ambiguity conservatively from the
-  question and table evidence.
-- When aggregation is not "none", apply that exact aggregation to the
-  measure column.
+- Treat the semantic state as a planning suggestion, not as verified truth.
+- The original question, full DataFrame schema, dtypes, sample rows, and tool
+  observations are more authoritative than the semantic state.
+- You may use exact DataFrame columns that are not present in the semantic
+  state when the question clearly requires them.
+- Ignore any role, filter, operation, or aggregation that conflicts with the
+  original question or table evidence.
+- Never invent a filter, literal value, proxy relationship, or column meaning.
+- Generic phrases such as "given season", "given year", "in the dataset", and
+  "for a person" are not literal filter values.
+- Do not interpret one column as another concept without explicit evidence.
+  For example, do not use Heredity as a proxy for gender.
 
-- For grouped_argmax or grouped_argmin:
-  1. group by the group or group_and_return column,
-  2. apply the specified aggregation to the measure column,
-  3. select the highest or lowest group,
-  4. return the requested label or value.
+Operation guidance:
+- Use grouped_argmax or grouped_argmin only when the question asks to compare
+  groups after aggregating rows.
+- Explicit grouped aggregation signals include:
+  "total", "sum", "combined", "average", "mean", "number of", and "count".
+- If the question asks for the row associated with the largest or smallest
+  individual value, use row-level idxmax() or idxmin().
+- Do not infer aggregation="sum" merely from words such as "largest",
+  "highest", "most", or "longest".
 
-- aggregation="mode" means the most frequent value, not the numerically
-  largest value.
+Aggregation guidance:
+- aggregation="mode" means the most frequent value.
+- aggregation="nunique" means the number of distinct non-null values.
+- For operation_family="unique_values", return the actual unique values using
+  .dropna().unique().tolist(), not the distinct count.
+- aggregation="count" means counting rows or non-null values according to the
+  original question.
 
-- aggregation="nunique" means count distinct non-null values.
+Implementation guidance:
+- Before sum, mean, min, max, ranking, or numeric comparison, inspect the dtype.
+- If a numeric value is stored as formatted text, clean it before using
+  pd.to_numeric(..., errors="coerce").
+- Follow requested output transformations from the original question, such as
+  converting month numbers to month names or returning the first three letters.
 
-- aggregation="count" normally means count rows or non-null values,
-  depending on the wording of the original question.
+Example grouped aggregation:
 
-- Do not replace a grouped operation with a row-level idxmax() or idxmin().
+Question:
+Which department has the highest average monthly income?
 
-Example semantic state:
-
-operation_family = grouped_argmax
-aggregation = mean
-group_and_return = Department
-measure = MonthlyIncome
-
-Required computation:
-
+Computation:
 df.groupby("Department")["MonthlyIncome"].mean().idxmax()
 
-Do not use:
+Example row-level selection:
 
+Question:
+What is the department of the employee with the highest monthly income?
+
+Computation:
 df.loc[df["MonthlyIncome"].idxmax(), "Department"]
-  
 """.strip()
 
         else:
@@ -142,8 +152,11 @@ Important rules:
 - If the question asks "mainly", interpret it as proportion > 0.5.
 - If the question asks for the "most", "highest", "largest", "longest", or "top N",
   compute the relevant entity using sorting, groupby, idxmax(), or nlargest().
-- Before numeric ranking or comparison, convert the target column using
-  pd.to_numeric(..., errors="coerce") unless it is already numeric.
+- Before numeric ranking, comparison, or aggregation, inspect the dtype.
+- If the column is already numeric, use it directly.
+- If numeric values contain currency symbols, spaces, non-breaking spaces,
+  or decimal commas, clean them before pd.to_numeric(..., errors="coerce").
+- Preserve decimal commas correctly: "6,20" should become "6.20", not "620".
 - Do not call nlargest(), nsmallest(), max(), or min() directly on categorical
   or string columns when a numeric comparison is intended.
 - If a top entity has an empty or missing name/value, skip it and use the next valid one.

@@ -82,7 +82,35 @@ def is_execution_error(pred) -> bool:
         pred.startswith("__CODE_ERROR__")
         or pred.startswith("__TIMEOUT__")
     )
+def semantic_state_is_usable(
+    semantic_state: dict | None,
+    semantic_state_data: dict | None,
+) -> tuple[bool, str | None]:
+    """
+    Decide whether semantic state is safe enough to guide code generation.
 
+    Invalid or ambiguous states fall back to the ordinary schema-hint mode.
+    """
+
+    if not semantic_state:
+        return False, "semantic state is missing"
+
+    validation_errors = (
+        semantic_state_data.get("validation_errors", [])
+        if semantic_state_data
+        else []
+    )
+
+    if validation_errors:
+        return False, "semantic state has validation errors"
+
+    if semantic_state.get("certainty") == "ambiguous":
+        return False, "semantic state is ambiguous"
+
+    if semantic_state.get("operation_family") == "unknown":
+        return False, "semantic operation is unknown"
+
+    return True, None
 
 def run_simple_post_code_react_loop(
     row,
@@ -778,14 +806,28 @@ def main():
                 semantic_state = None
                 semantic_state_text = ""
 
+        effective_schema_mode = args.schema_mode
+        effective_semantic_state = semantic_state
+        semantic_state_fallback_reason = None
 
-        # initial code generation and main prompt creation
+        if args.schema_mode == "semantic-state":
+            semantic_state_usable, semantic_state_fallback_reason = (
+                semantic_state_is_usable(
+                    semantic_state=semantic_state,
+                    semantic_state_data=semantic_state_data,
+                )
+            )
+
+            if not semantic_state_usable:
+                effective_schema_mode = "hint"
+                effective_semantic_state = None
+
         prompt = make_baseline_prompt(
             row=row,
             df=df,
-            schema_mode=args.schema_mode,
+            schema_mode=effective_schema_mode,
             tool_observations=tool_observations,
-            semantic_state=semantic_state,
+            semantic_state=effective_semantic_state,
         )
 
         raw = llm.generate(prompt)
@@ -977,6 +1019,9 @@ def main():
                 if semantic_state_data
                 else False
             ),
+
+            "effective_schema_mode": effective_schema_mode,
+            "semantic_state_fallback_reason": semantic_state_fallback_reason,
 
             "example_index": original_index,
         }

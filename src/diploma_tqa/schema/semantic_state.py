@@ -119,9 +119,14 @@ def make_semantic_state_prompt(
     df: pd.DataFrame,
     candidate_columns: list[str],
 ) -> str:
-    schema_summary = dataframe_schema_summary(
+    candidate_schema_summary = dataframe_schema_summary(
         df=df,
         candidate_columns=candidate_columns,
+    )
+
+    full_schema_summary = dataframe_schema_summary(
+        df=df,
+        candidate_columns=list(df.columns),
     )
 
     return f"""
@@ -134,8 +139,11 @@ columns, filters, values, aggregations, or operations.
 ORIGINAL QUESTION:
 {question}
 
-CANDIDATE TABLE COLUMNS:
-{schema_summary}
+LIKELY RELEVANT COLUMNS:
+{candidate_schema_summary}
+
+FULL TABLE SCHEMA:
+{full_schema_summary}
 
 Return exactly one JSON object with this structure:
 
@@ -170,22 +178,25 @@ Return exactly one JSON object with this structure:
 
 Rules:
 
-1. Use only exact column names from CANDIDATE TABLE COLUMNS.
-2. The original question is the source of truth.
-3. Do not replace explicit literals with observed maxima, minima, or nearby values.
-4. Do not infer filters that are not stated or clearly implied.
-5. "Which/what person, country, category, product..." usually asks for a label.
-6. "How many" usually asks for a scalar number.
-7. For "highest total X by Y":
+1. Use only exact column names from FULL TABLE SCHEMA.
+2. LIKELY RELEVANT COLUMNS are suggestions, not restrictions.
+3. If the question clearly refers to a column outside the likely candidates,
+   use the appropriate column from FULL TABLE SCHEMA.
+4. The original question is the source of truth.
+5. Do not replace explicit literals with observed maxima, minima, or nearby values.
+6. Do not infer filters that are not stated or clearly implied.
+8. "Which/what person, country, category, product..." usually asks for a label.
+9. "How many" usually asks for a scalar number.
+10. For "highest total X by Y":
    - Y is normally group_and_return,
    - X is normally measure,
    - operation_family is grouped_argmax.
-8. For "lowest total X by Y", use grouped_argmin.
-9. For "highest X" where the numeric value itself is requested, use argmax with
+11. For "lowest total X by Y", use grouped_argmin.
+12. For "highest X" where the numeric value itself is requested, use argmax with
    answer_kind scalar_number.
-10. When uncertain, use certainty="ambiguous" and record the ambiguity rather
+13. When uncertain, use certainty="ambiguous" and record the ambiguity rather
     than inventing an interpretation.
-11. Set aggregation according to the wording:
+14. Set aggregation according to the wording:
     - "total", "sum", or "combined" -> sum
     - "average", "mean", or "on average" -> mean
     - "how many", "number of rows", or "count" -> count
@@ -194,9 +205,9 @@ Rules:
     - "maximum value" -> max
     - "minimum value" -> min
     - "median" -> median   
-12. Use aggregation="none" for direct lookup, filtering, existence, raw-value
+15. Use aggregation="none" for direct lookup, filtering, existence, raw-value
     ranking, and other operations that do not aggregate rows.     
-13. Output JSON only. No Markdown and no explanation.
+16. Output JSON only. No Markdown and no explanation.
 """.strip()
 
 
