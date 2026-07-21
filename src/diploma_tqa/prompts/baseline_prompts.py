@@ -2,7 +2,6 @@ import json
 
 from diploma_tqa.schema.schema_linker import make_schema_hint
 
-
 def make_baseline_prompt(
     row: dict,
     df,
@@ -39,74 +38,60 @@ Schema hint:
             )
 
             schema_section = f"""
-Proposed semantic interpretation:
+Proposed semantic state:
 {semantic_state_json}
 
-Semantic-interpretation instructions:
-- Treat this interpretation as a planning suggestion, not as verified truth.
-- The original question, exact DataFrame columns, dtypes, sample rows, and tool
-  observations are more authoritative.
-- You may use exact DataFrame columns not listed in the interpretation when the
-  question clearly requires them.
-- Ignore any field that conflicts with the question or table evidence.
-- Never invent filters, literal values, proxy relationships, or column meanings.
+Semantic-state instructions:
+- Treat the semantic state as a planning suggestion, not as verified truth.
+- The original question, full DataFrame schema, dtypes, sample rows, and tool
+  observations are more authoritative than the semantic state.
+- You may use exact DataFrame columns that are not present in the semantic
+  state when the question clearly requires them.
+- Ignore any role, filter, operation, or aggregation that conflicts with the
+  original question or table evidence.
+- Never invent a filter, literal value, proxy relationship, or column meaning.
 - Generic phrases such as "given season", "given year", "in the dataset", and
   "for a person" are not literal filter values.
 - Do not interpret one column as another concept without explicit evidence.
+  For example, do not use Heredity as a proxy for gender.
 
-Meaning of the semantic fields:
-- intent describes the user-level task, not a required Pandas implementation.
-- answer_column supplies the value to return. It may be null for a computed
-  scalar number or boolean.
-- value_column supplies values to aggregate, count, compare, or rank.
-- group_column defines groups. It is null for row-level ranking.
-- aggregation says how rows are combined.
-- direction is highest or lowest for rank questions.
-- top_k is used only when multiple ranked results are explicitly requested.
-
-Implementation guidance for rank questions:
-- If intent="rank", group_column is not null, and aggregation is not "none",
-  aggregate value_column by group_column, then select the highest/lowest group.
-- If intent="rank" and group_column is null, rank individual rows by
-  value_column. Return answer_column from the winning row when answer_column is
-  present; otherwise return the winning value itself.
-- Do not group merely because answer_column exists.
-- Do not infer aggregation="sum" from words such as "largest", "highest",
-  "most", or "longest" unless the question explicitly asks to combine rows.
+Operation guidance:
+- Use grouped_argmax or grouped_argmin only when the question asks to compare
+  groups after aggregating rows.
+- Explicit grouped aggregation signals include:
+  "total", "sum", "combined", "average", "mean", "number of", and "count".
+- If the question asks for the row associated with the largest or smallest
+  individual value, use row-level idxmax() or idxmin().
+- Do not infer aggregation="sum" merely from words such as "largest",
+  "highest", "most", or "longest".
 
 Aggregation guidance:
 - aggregation="mode" means the most frequent value.
 - aggregation="nunique" means the number of distinct non-null values.
-- intent="unique_values" means return actual unique values using
+- For operation_family="unique_values", return the actual unique values using
   .dropna().unique().tolist(), not the distinct count.
-- aggregation="count" means count rows or non-null values according to the
+- aggregation="count" means counting rows or non-null values according to the
   original question.
 
-Numeric and dtype guidance:
+Implementation guidance:
 - Before sum, mean, min, max, ranking, or numeric comparison, inspect the dtype.
 - If a numeric value is stored as formatted text, clean it before using
   pd.to_numeric(..., errors="coerce").
-- Do not call nlargest(), nsmallest(), max(), or min() directly on categorical
-  or string columns when numeric comparison is intended.
+- Follow requested output transformations from the original question, such as
+  converting month numbers to month names or returning the first three letters.
 
-Example grouped rank:
+Example grouped aggregation:
+
 Question:
 Which department has the highest average monthly income?
-
-Relevant interpretation:
-intent="rank", answer_column="Department", value_column="MonthlyIncome",
-group_column="Department", aggregation="mean", direction="highest"
 
 Computation:
 df.groupby("Department")["MonthlyIncome"].mean().idxmax()
 
-Example row-level rank:
+Example row-level selection:
+
 Question:
 What is the department of the employee with the highest monthly income?
-
-Relevant interpretation:
-intent="rank", answer_column="Department", value_column="MonthlyIncome",
-group_column=null, aggregation="none", direction="highest"
 
 Computation:
 df.loc[df["MonthlyIncome"].idxmax(), "Department"]
@@ -186,8 +171,6 @@ Important rules:
 - When extracting multiple fields from a dictionary-like column, parse the
   column once into a separate variable and extract all fields from that parsed object.
 - Do not overwrite the original column before extracting all required fields.
-- Follow requested output transformations from the original question, such as
-  converting month numbers to month names or returning the first three letters.
 
 DataFrame columns:
 {list(df.columns)}{optional_sections}

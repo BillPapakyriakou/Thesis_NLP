@@ -1,6 +1,6 @@
 import argparse
 import json
-import datetime
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -36,9 +36,13 @@ from diploma_tqa.tools.tool_runner import (
 )
 
 from diploma_tqa.schema.semantic_state import (
+    build_semantic_state,
+    format_semantic_state, ALLOWED_OPERATIONS,
+)
+
+from diploma_tqa.schema.semantic_state import (
     ALLOWED_AGGREGATIONS,
-    ALLOWED_DIRECTIONS,
-    ALLOWED_INTENTS,
+    ALLOWED_OPERATIONS,
     build_semantic_state,
 )
 
@@ -112,25 +116,29 @@ def semantic_state_is_usable(
     semantic_state: dict | None,
     semantic_state_data: dict | None,
 ) -> tuple[bool, str | None]:
-    """Decide whether a semantic interpretation is useful enough to pass on."""
+    """
+    Decide whether semantic state is safe enough to guide code generation.
+
+    Invalid or ambiguous states fall back to the ordinary schema-hint mode.
+    """
 
     if not semantic_state:
         return False, "semantic state is missing"
 
-    fatal_errors = (
+    validation_errors = (
         semantic_state_data.get("validation_errors", [])
         if semantic_state_data
         else []
     )
 
-    if fatal_errors:
-        return False, "semantic state has fatal validation errors"
+    if validation_errors:
+        return False, "semantic state has validation errors"
 
     if semantic_state.get("certainty") == "ambiguous":
         return False, "semantic state is ambiguous"
 
-    if semantic_state.get("intent") == "unknown":
-        return False, "semantic intent is unknown"
+    if semantic_state.get("operation_family") == "unknown":
+        return False, "semantic operation is unknown"
 
     return True, None
 
@@ -465,8 +473,8 @@ def main():
         help=(
             "Schema guidance mode. "
             "'hint' uses lexical candidate-column retrieval. "
-            "'semantic-state' uses one LLM call to predict validated semantic slots, "
-            "filters, and answer kind."
+            "'semantic-state' uses one LLM call to predict validated column roles, "
+            "operation family, filters, and answer kind."
         ),
     )
 
@@ -798,6 +806,7 @@ def main():
 
         semantic_state_data = None
         semantic_state = None
+        semantic_state_text = ""
 
         if args.schema_mode == "semantic-state":
             try:
@@ -810,6 +819,7 @@ def main():
                 )
 
                 semantic_state = semantic_state_data["state"]
+                semantic_state_text = format_semantic_state(semantic_state)
 
             except Exception as e:
                 semantic_state_data = {
@@ -821,10 +831,10 @@ def main():
                     "validation_errors": [
                         f"Semantic-state generation failed: {e}"
                     ],
-                    "validation_warnings": [],
                 }
 
                 semantic_state = None
+                semantic_state_text = ""
 
         effective_schema_mode = args.schema_mode
         effective_semantic_state = semantic_state
@@ -1033,11 +1043,6 @@ def main():
                 if semantic_state_data
                 else []
             ),
-            "semantic_state_validation_warnings": (
-                semantic_state_data.get("validation_warnings", [])
-                if semantic_state_data
-                else []
-            ),
             "semantic_state_valid": (
                 bool(semantic_state)
                 and not semantic_state_data.get("validation_errors", [])
@@ -1147,13 +1152,6 @@ def main():
             for item in logs
             if item.get("semantic_state") is not None
             and not item.get("semantic_state_validation_errors")
-            and not item.get("semantic_state_validation_warnings")
-        ),
-
-        "semantic_state_usable_examples": sum(
-            1
-            for item in logs
-            if item.get("effective_schema_mode") == "semantic-state"
         ),
 
         "semantic_state_validation_error_examples": sum(
@@ -1171,22 +1169,16 @@ def main():
             )
         ),
 
-        "semantic_state_warning_examples": sum(
-            1
-            for item in logs
-            if item.get("semantic_state_validation_warnings")
-        ),
-
-        "semantic_state_intent_counts": {
-            intent: sum(
+        "semantic_state_operation_counts": {
+            operation: sum(
                 1
                 for item in logs
                 if (
-                    item.get("semantic_state")
-                    and item["semantic_state"].get("intent") == intent
+                        item.get("semantic_state")
+                        and item["semantic_state"].get("operation_family") == operation
                 )
             )
-            for intent in sorted(ALLOWED_INTENTS)
+            for operation in sorted(ALLOWED_OPERATIONS)
         },
 
         "semantic_state_aggregation_counts": {
@@ -1194,36 +1186,24 @@ def main():
                 1
                 for item in logs
                 if (
-                    item.get("semantic_state")
-                    and item["semantic_state"].get("aggregation") == aggregation
+                        item.get("semantic_state")
+                        and item["semantic_state"].get("aggregation") == aggregation
                 )
             )
             for aggregation in sorted(ALLOWED_AGGREGATIONS)
         },
 
-        "semantic_state_direction_counts": {
-            direction: sum(
+        "semantic_state_operation_aggregation_counts": {
+            f"{operation}:{aggregation}": sum(
                 1
                 for item in logs
                 if (
-                    item.get("semantic_state")
-                    and item["semantic_state"].get("direction") == direction
+                        item.get("semantic_state")
+                        and item["semantic_state"].get("operation_family") == operation
+                        and item["semantic_state"].get("aggregation") == aggregation
                 )
             )
-            for direction in sorted(ALLOWED_DIRECTIONS)
-        },
-
-        "semantic_state_intent_aggregation_counts": {
-            f"{intent}:{aggregation}": sum(
-                1
-                for item in logs
-                if (
-                    item.get("semantic_state")
-                    and item["semantic_state"].get("intent") == intent
-                    and item["semantic_state"].get("aggregation") == aggregation
-                )
-            )
-            for intent in sorted(ALLOWED_INTENTS)
+            for operation in sorted(ALLOWED_OPERATIONS)
             for aggregation in sorted(ALLOWED_AGGREGATIONS)
         },
 
