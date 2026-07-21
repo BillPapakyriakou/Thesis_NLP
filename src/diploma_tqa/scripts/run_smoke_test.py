@@ -46,7 +46,11 @@ from diploma_tqa.schema.semantic_state import (
 
 def make_json_safe(obj):
     # convert numpy/pandas objects into Python objects
+    if isinstance(obj, pd.Categorical):
+        return obj.tolist()
 
+    if isinstance(obj, pd.CategoricalDtype):
+        return str(obj)
     if isinstance(obj, dict):
         return {str(k): make_json_safe(v) for k, v in obj.items()}
 
