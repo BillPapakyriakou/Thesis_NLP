@@ -1,4 +1,4 @@
-from pandas._libs import json
+import json
 
 from diploma_tqa.schema.schema_linker import make_schema_hint
 
