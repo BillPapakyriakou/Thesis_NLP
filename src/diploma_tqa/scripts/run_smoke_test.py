@@ -21,7 +21,7 @@ from diploma_tqa.tools.tool_prompts import (
     make_react_tool_planning_prompt,
     make_post_code_react_action_prompt,
     make_post_code_react_decision_prompt,
-    make_post_code_react_repair_prompt,
+    make_post_code_react_repair_prompt, make_semantic_react_repair_prompt, make_semantic_react_critic_prompt,
 )
 
 from diploma_tqa.tools.tool_runner import (
@@ -30,7 +30,12 @@ from diploma_tqa.tools.tool_runner import (
     execute_tool_calls,
     format_react_plan,
     parse_json_object,
-    execute_post_code_react_action,
+    execute_post_code_react_action, parse_semantic_critic,
+)
+
+from diploma_tqa.schema.semantic_state import (
+    build_semantic_state,
+    format_semantic_state, ALLOWED_OPERATIONS,
 )
 
 def make_json_safe(obj):
@@ -396,11 +401,17 @@ def main():
     # max execution retries
     parser.add_argument("--max-retries", type=int, default=0)
 
-    # optional schema-hint mode
+    # optional schema modes
     parser.add_argument(
         "--schema-mode",
-        choices=["none", "hint"],
+        choices=["none", "hint", "semantic-state"],
         default="none",
+        help=(
+            "Schema guidance mode. "
+            "'hint' uses lexical candidate-column retrieval. "
+            "'semantic-state' uses one LLM call to predict validated column roles, "
+            "operation family, filters, and answer kind."
+        ),
     )
 
     # optional tool usage mode (modes: auto-schema, inspect)
@@ -729,12 +740,46 @@ def main():
 
                 react_steps = []
 
+        semantic_state_data = None
+        semantic_state = None
+        semantic_state_text = ""
+
+        if args.schema_mode == "semantic-state":
+            try:
+                semantic_state_data = build_semantic_state(
+                    question=row["question"],
+                    df=df,
+                    llm=llm,
+                    parse_json_object=parse_json_object,
+                    top_k=8,
+                )
+
+                semantic_state = semantic_state_data["state"]
+                semantic_state_text = format_semantic_state(semantic_state)
+
+            except Exception as e:
+                semantic_state_data = {
+                    "candidate_columns": [],
+                    "prompt": None,
+                    "raw_response": None,
+                    "parsed_state": None,
+                    "state": None,
+                    "validation_errors": [
+                        f"Semantic-state generation failed: {e}"
+                    ],
+                }
+
+                semantic_state = None
+                semantic_state_text = ""
+
+
         # initial code generation and main prompt creation
         prompt = make_baseline_prompt(
             row=row,
             df=df,
             schema_mode=args.schema_mode,
             tool_observations=tool_observations,
+            semantic_state=semantic_state,
         )
 
         raw = llm.generate(prompt)
@@ -899,6 +944,34 @@ def main():
             "num_attempts": len(attempts),
             "attempts": attempts,
 
+            "semantic_state": semantic_state,
+            "semantic_state_candidates": (
+                semantic_state_data.get("candidate_columns", [])
+                if semantic_state_data
+                else []
+            ),
+            "semantic_state_raw_response": (
+                semantic_state_data.get("raw_response")
+                if semantic_state_data
+                else None
+            ),
+            "semantic_state_parsed": (
+                semantic_state_data.get("parsed_state")
+                if semantic_state_data
+                else None
+            ),
+            "semantic_state_validation_errors": (
+                semantic_state_data.get("validation_errors", [])
+                if semantic_state_data
+                else []
+            ),
+            "semantic_state_valid": (
+                bool(semantic_state)
+                and not semantic_state_data.get("validation_errors", [])
+                if semantic_state_data
+                else False
+            ),
+
             "example_index": original_index,
         }
 
@@ -959,6 +1032,8 @@ def main():
                 if step.get("repair_raw_response") is not None:
                     total_model_calls += 1
 
+    if args.schema_mode == "semantic-state":
+        total_model_calls += len(logs)
 
     # evaluate predictions using the official task evaluator
     try:
@@ -982,6 +1057,48 @@ def main():
         "react_observation_mode": (
             args.react_observation_mode if args.tool_mode == "react-inspect" else None
         ),
+
+        "semantic_state_enabled": args.schema_mode == "semantic-state",
+
+        "semantic_state_valid_examples": sum(
+            1
+            for item in logs
+            if item.get("semantic_state") is not None
+        ),
+
+        "semantic_state_clean_examples": sum(
+            1
+            for item in logs
+            if item.get("semantic_state") is not None
+            and not item.get("semantic_state_validation_errors")
+        ),
+
+        "semantic_state_validation_error_examples": sum(
+            1
+            for item in logs
+            if item.get("semantic_state_validation_errors")
+        ),
+
+        "semantic_state_ambiguous_examples": sum(
+            1
+            for item in logs
+            if (
+                    item.get("semantic_state")
+                    and item["semantic_state"].get("certainty") == "ambiguous"
+            )
+        ),
+
+        "semantic_state_operation_counts": {
+            operation: sum(
+                1
+                for item in logs
+                if (
+                        item.get("semantic_state")
+                        and item["semantic_state"].get("operation_family") == operation
+                )
+            )
+            for operation in sorted(ALLOWED_OPERATIONS)
+        },
 
         "max_retries": args.max_retries,
         "error_fixing_enabled": args.max_retries > 0,
