@@ -21,6 +21,7 @@ import math
 import re
 import unicodedata
 from typing import Any, Iterable
+import ast
 
 import numpy as np
 import pandas as pd
@@ -875,6 +876,71 @@ class GroundedSchemaIndex:
             ),
         }
 
+def _mapping_keys_from_samples(
+    values: list[Any],
+) -> list[str]:
+    keys: list[str] = []
+    mapping_hits = 0
+
+    for value in values[:4]:
+        if not isinstance(value, str):
+            continue
+
+        text = value.strip()
+
+        if not (
+            text.startswith("{")
+            and text.endswith("}")
+        ):
+            continue
+
+        try:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            continue
+
+        if not isinstance(parsed, dict):
+            continue
+
+        mapping_hits += 1
+        keys.extend(str(key) for key in parsed)
+
+    # Require more than one example so an isolated string
+    # does not cause a misleading storage classification.
+    if mapping_hits < 2:
+        return []
+
+    return list(dict.fromkeys(keys))[:15]
+
+
+def _looks_like_numeric_text(
+    values: list[Any],
+) -> bool:
+    texts = [
+        str(value).strip()
+        for value in values[:4]
+        if isinstance(value, str)
+        and str(value).strip()
+    ]
+
+    if len(texts) < 2:
+        return False
+
+    formatted_hits = sum(
+        bool(
+            re.search(
+                r"(?:[$€£]|US\$|\d[,.]\d)",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+        for text in texts
+    )
+
+    return (
+        formatted_hits >= 2
+        and formatted_hits * 2 >= len(texts)
+    )
 
 def _compact_value(value: Any, limit: int = 70) -> str:
     text = repr(_safe_scalar(value))
@@ -908,6 +974,32 @@ def format_grounded_schema_evidence(evidence: dict[str, Any]) -> str:
         top_values = item.get("top_values") or []
         sample_values = item.get("sample_values") or []
         numeric_stats = item.get("numeric_stats")
+
+        mapping_keys = _mapping_keys_from_samples(
+            sample_values
+        )
+
+        if mapping_keys:
+            lines.append(
+                "  storage note: cells are serialized dictionaries; "
+                "parse string cells with ast.literal_eval before "
+                "accessing their nested fields"
+            )
+            lines.append(
+                "  observed nested fields: "
+                + ", ".join(
+                    repr(key)
+                    for key in mapping_keys
+                )
+            )
+
+        elif _looks_like_numeric_text(sample_values):
+            lines.append(
+                "  storage note: values are numbers stored as "
+                "formatted text; use .astype(str) before .str, "
+                "remove currency and non-breaking spaces, replace "
+                "a decimal comma with '.', then use pd.to_numeric"
+            )
 
         if top_values:
             rendered = ", ".join(
