@@ -1,5 +1,6 @@
 import re
 import textwrap
+import ast
 
 
 def strip_code_fences(text: str) -> str:
@@ -21,19 +22,28 @@ def strip_code_fences(text: str) -> str:
 
 def normalize_body_indentation(body: str) -> str:
     """
-    Normalize model-generated code before placing it inside:
-
-        def answer(df):
-            <body>
-
-    This fixes common LLM outputs like:
-
-        result = ...
-            return result
-
-    while preserving normal nested blocks such as if/else bodies.
+    Preserve valid relative indentation. Only apply the legacy repair
+    when the original body is syntactically invalid.
     """
-    body = textwrap.dedent(body).strip()
+
+    candidate = textwrap.dedent(body).strip()
+
+    if candidate:
+        try:
+            wrapped = (
+                "def answer(df):\n"
+                + textwrap.indent(candidate, "    ")
+            )
+            ast.parse(wrapped)
+
+            # The generated body is already syntactically valid.
+            return candidate
+
+        except SyntaxError:
+            pass
+
+    # Existing legacy indentation-repair logic follows below.
+    body = candidate
     lines = body.splitlines()
 
     normalized = []
@@ -72,7 +82,6 @@ def normalize_body_indentation(body: str) -> str:
             )
         )
 
-        # If the previous line opened a block, preserve indentation for this line.
         if previous_ended_with_colon:
             normalized.append("    " + stripped)
         elif starts_top_level or looks_like_assignment:
@@ -134,11 +143,13 @@ def extract_answer_body(text: str) -> str:
 
                 body_lines.append(line)
 
-        body = "\n".join(body_lines).strip()
+        body = textwrap.dedent(
+            "\n".join(body_lines)
+        ).strip()
 
     # Case 2: model returned bare code
     else:
-        body = text.strip()
+        body = textwrap.dedent(text).strip()
 
     # ensure code returns a value
     if "return " not in body:

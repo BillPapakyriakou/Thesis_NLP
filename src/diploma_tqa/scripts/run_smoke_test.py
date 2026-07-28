@@ -46,6 +46,10 @@ from diploma_tqa.schema.semantic_state import (
     build_semantic_state,
 )
 
+from diploma_tqa.schema.grounded_schema import (
+    GroundedSchemaIndex,
+)
+
 def make_json_safe(value):
     if value is None or isinstance(value, (str, int, float, bool)):
         if isinstance(value, float) and not np.isfinite(value):
@@ -468,13 +472,39 @@ def main():
     # optional schema modes
     parser.add_argument(
         "--schema-mode",
-        choices=["none", "hint", "semantic-state"],
+        choices=[
+            "none",
+            "hint",
+            "grounded",
+            "semantic-state",
+        ],
         default="none",
         help=(
             "Schema guidance mode. "
             "'hint' uses lexical candidate-column retrieval. "
-            "'semantic-state' uses one LLM call to predict validated column roles, "
-            "operation family, filters, and answer kind."
+            "'grounded' adds deterministic dataframe profiles and real "
+            "value links without another LLM call. "
+            "'semantic-state' uses one LLM call to predict validated "
+            "column roles, operation family, filters, and answer kind."
+        ),
+    )
+
+    parser.add_argument(
+        "--grounded-max-columns",
+        type=int,
+        default=6,
+        help=(
+            "Maximum number of grounded columns shown "
+            "to the code model."
+        ),
+    )
+
+    parser.add_argument(
+        "--grounded-max-index-values",
+        type=int,
+        default=12000,
+        help=(
+            "Per-column cap for deterministic value linking."
         ),
     )
 
@@ -549,6 +579,12 @@ def main():
     running_success = 0
     running_retried = 0
 
+    # Keep an immutable source table and grounded index per dataset.
+    # Each question gets its own dataframe copy because model-generated
+    # code may mutate df.
+    source_table_cache = {}
+    grounded_index_cache = {}
+
     progress = tqdm(
         qa,
         total=len(qa),
@@ -563,7 +599,23 @@ def main():
             if selected_indices is not None
             else local_i - 1
         )
-        df = load_table(row["dataset"], lite=args.lite)
+
+        table_key = (
+            row["dataset"],
+            bool(args.lite),
+        )
+
+        source_df = source_table_cache.get(table_key)
+
+        if source_df is None:
+            source_df = load_table(
+                row["dataset"],
+                lite=args.lite,
+            )
+            source_table_cache[table_key] = source_df
+
+        # Never let generated code mutate the cached source table.
+        df = copy.deepcopy(source_df)
 
         tool_raw = None
         tool_calls = []
@@ -804,6 +856,38 @@ def main():
 
                 react_steps = []
 
+        grounded_schema_data = None
+
+        if args.schema_mode == "grounded":
+            grounded_index = grounded_index_cache.get(
+                table_key
+            )
+
+            if grounded_index is None:
+                grounded_index = GroundedSchemaIndex(
+                    source_df,
+                    max_index_values=(
+                        args.grounded_max_index_values
+                    ),
+                )
+
+                grounded_index_cache[
+                    table_key
+                ] = grounded_index
+
+            grounded_schema_data = (
+                grounded_index.build_evidence(
+                    question=row["question"],
+                    answer_type=row.get(
+                        "type",
+                        "unknown",
+                    ),
+                    max_columns=(
+                        args.grounded_max_columns
+                    ),
+                )
+            )
+
         semantic_state_data = None
         semantic_state = None
         semantic_state_text = ""
@@ -840,6 +924,13 @@ def main():
         effective_semantic_state = semantic_state
         semantic_state_fallback_reason = None
 
+        if args.schema_mode == "grounded" and not (
+                grounded_schema_data
+                and grounded_schema_data.get("active")
+        ):
+            # Weak schema evidence is safer omitted.
+            effective_schema_mode = "none"
+
         if args.schema_mode == "semantic-state":
             semantic_state_usable, semantic_state_fallback_reason = (
                 semantic_state_is_usable(
@@ -858,6 +949,7 @@ def main():
             schema_mode=effective_schema_mode,
             tool_observations=tool_observations,
             semantic_state=effective_semantic_state,
+            grounded_schema=grounded_schema_data,
         )
 
         raw = llm.generate(prompt)
@@ -1054,6 +1146,31 @@ def main():
             "semantic_state_fallback_reason": semantic_state_fallback_reason,
 
             "example_index": original_index,
+
+            "grounded_schema": grounded_schema_data,
+
+            "grounded_schema_active": bool(
+                grounded_schema_data
+                and grounded_schema_data.get("active")
+            ),
+
+            "grounded_selected_columns": (
+                grounded_schema_data.get(
+                    "selected_columns",
+                    [],
+                )
+                if grounded_schema_data
+                else []
+            ),
+
+            "grounded_value_links": (
+                grounded_schema_data.get(
+                    "value_links",
+                    [],
+                )
+                if grounded_schema_data
+                else []
+            ),
         }
 
         logs.append(log_item)
@@ -1206,6 +1323,41 @@ def main():
             for operation in sorted(ALLOWED_OPERATIONS)
             for aggregation in sorted(ALLOWED_AGGREGATIONS)
         },
+
+        "grounded_schema_enabled": (
+                args.schema_mode == "grounded"
+        ),
+
+        "grounded_schema_active_examples": sum(
+            1
+            for item in logs
+            if item.get("grounded_schema_active")
+        ),
+
+        "grounded_schema_inactive_examples": sum(
+            1
+            for item in logs
+            if (
+                    args.schema_mode == "grounded"
+                    and not item.get(
+                "grounded_schema_active"
+            )
+            )
+        ),
+
+        "grounded_examples_with_value_links": sum(
+            1
+            for item in logs
+            if item.get("grounded_value_links")
+        ),
+
+        "grounded_max_columns": (
+            args.grounded_max_columns
+        ),
+
+        "grounded_max_index_values": (
+            args.grounded_max_index_values
+        ),
 
         "max_retries": args.max_retries,
         "error_fixing_enabled": args.max_retries > 0,

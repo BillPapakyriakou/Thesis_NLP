@@ -1,5 +1,11 @@
 import json
 
+from typing import Any
+
+from diploma_tqa.schema.grounded_schema import (
+    format_grounded_schema_evidence,
+)
+
 from diploma_tqa.schema.schema_linker import make_schema_hint
 
 def make_baseline_prompt(
@@ -8,6 +14,7 @@ def make_baseline_prompt(
     schema_mode: str = "none",
     tool_observations: str = "",
     semantic_state=None,
+    grounded_schema: dict[str, Any] | None = None,
 ) -> str:
     """
     Build the main code-generation prompt for a table-question example.
@@ -15,8 +22,10 @@ def make_baseline_prompt(
     Supported schema modes:
     - none: no extra schema guidance
     - hint: lexical schema-linking hint
+    - grounded: deterministic table-grounded structural schema
     - semantic-state: validated LLM-generated semantic interpretation
     """
+
 
     question = row["question"]
     answer_type = row.get("type", "unknown")
@@ -28,6 +37,11 @@ def make_baseline_prompt(
 Schema hint:
 {make_schema_hint(question, list(df.columns))}
 """.strip()
+
+    elif schema_mode == "grounded":
+        schema_section = format_grounded_schema_evidence(
+            grounded_schema or {}
+        )
 
     elif schema_mode == "semantic-state":
         if semantic_state:
@@ -164,13 +178,19 @@ Important rules:
   answer type explicitly requires a list.
 - Stop immediately after the return statement.
 - Use tool observations when they identify exact column names or useful column values.
-- If a column contains dictionary-like strings such as "{{'key': value}}",
-  parse them with ast.literal_eval(x).get("key") instead of direct indexing
-  ["key"], because some rows may not contain every key.
-- Do not call literal_eval directly.
-- When extracting multiple fields from a dictionary-like column, parse the
-  column once into a separate variable and extract all fields from that parsed object.
-- Do not overwrite the original column before extracting all required fields.
+- When grounded schema reports kind=mapping, each cell contains a mapping,
+  not ordinary free text.
+- For mapping cells:
+  parsed = ast.literal_eval(x) if isinstance(x, str) else x
+- After parsing, verify isinstance(parsed, dict) and use parsed.get("key").
+- Use ast.literal_eval(...), never bare literal_eval(...).
+- Do not use .str extraction on a column reported as kind=mapping.
+- When grounded schema reports kind=list[category] or kind=list[number],
+  the meaningful values are the individual list elements. The complete
+  serialized cell and the empty list "[]" are not category values.
+- When grounded schema reports kind=numeric_text, values are numeric
+  quantities stored with formatting such as currency symbols, spaces,
+  non-breaking spaces, decimal commas, or percentage signs.
 
 DataFrame columns:
 {list(df.columns)}{optional_sections}
