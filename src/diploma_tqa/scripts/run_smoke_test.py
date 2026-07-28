@@ -5,6 +5,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import copy
 
 from tqdm import tqdm
 from databench_eval import Evaluator
