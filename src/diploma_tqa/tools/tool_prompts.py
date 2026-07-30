@@ -166,16 +166,21 @@ def make_semantic_react_critic_prompt(
     prediction,
     execution_error=None,
     post_code_observations="",
+    grounded_schema_evidence="",
+    deterministic_violations=None,
 ):
-    return f"""
-You are a post-code semantic ReAct critic for a Pandas table-question-answering system.
+    deterministic_violations = deterministic_violations or []
 
-Your job is to decide whether the generated code and prediction actually answer the question.
+    return f"""
+You are a conservative post-code semantic critic for a Pandas table-question-answering system.
+
+The current code already executed successfully and is the default answer.
+Your burden of proof is to preserve it unless a specific, demonstrable contract violation exists.
 
 You can do one of three things:
-1. accept: the code and prediction answer the question.
-2. need_evidence: you need more dataframe evidence before deciding.
-3. repair: the semantic error is clear enough to give a concrete code-repair instruction.
+1. accept: preserve the current code and prediction.
+2. need_evidence: request dataframe evidence before deciding.
+3. repair: request one minimal repair only when the error is clear, high-confidence, and supported by evidence.
 
 Do not answer the original question directly.
 Do not write code.
@@ -196,6 +201,12 @@ Dtypes:
 Data preview:
 {preview}
 
+Deterministic contract violations detected by the runner:
+{deterministic_violations if deterministic_violations else "None"}
+
+Grounded schema evidence:
+{grounded_schema_evidence if grounded_schema_evidence else "None"}
+
 Pre-code inspection observations:
 {tool_observations if tool_observations else "None"}
 
@@ -213,57 +224,57 @@ Prediction:
 
 Available verification tools:
 1. find_columns(query)
-   - Use when the generated code may have used the wrong column or missed a better candidate.
-   - Example: {{"name": "find_columns", "args": {{"query": "sale discount offer status"}}}}
+   - Use only when an exact dataframe column may be missing from consideration.
 
 2. profile_column(column)
-   - Use to inspect values, formats, numeric ranges, common values, or dictionary-like strings.
-   - The column must be an exact column name from Available columns.
-   - Example: {{"name": "profile_column", "args": {{"column": "Month"}}}}
+   - Use to verify the semantic meaning, value format, range, or examples of an exact column.
+   - When proposing a column replacement, profile the proposed column before repair.
 
 3. find_values(column, query)
-   - Use to match a literal question value to actual cell values in a known column.
-   - Use for names, titles, countries, cities, products, organizations, codes, labels, categories, years, dates, seasons, or exact phrases.
-   - The column must be an exact column name from Available columns.
-   - Example: {{"name": "find_values", "args": {{"column": "year", "query": "2012"}}}}
+   - Use only to verify a literal entity or exact cell value from the question.
+   - A failed value match is not evidence that the answer should be 0, False, None, or an empty list.
 
-Before deciding, build an answer contract:
-- What operation does the question require?
-- Which columns are used for filtering?
-- Which columns are used for grouping?
-- Which columns are used for aggregation or sorting?
-- Which column/value should be returned?
-- What representation is expected: number, category, boolean, list[number], or list[category]?
-- If the computation column and return column differ, make that explicit.
+Preservation rules:
+- Do not repair merely because another implementation is possible.
+- Do not repair a code path that is plausibly consistent with the question and evidence.
+- A different interpretation is not enough to repair.
+- If uncertainty remains, use need_evidence. If no new useful evidence can be requested, accept.
+- Never change a column without verified evidence that the replacement represents the question better.
+- Additional helper columns or intermediate computations are not inherently errors.
+- Absence from the five-row preview is not evidence of absence from the dataframe.
+- Do not infer a unit conversion unless the source unit is explicitly established.
+- If your reason says the current code or prediction is correct, decision must be accept.
 
-Common semantic errors to check:
-- Returning a dataframe index instead of the requested label/name/value.
-- Ranking by the right metric but returning the wrong column.
-- Using a numeric ID column when the question asks for a name/label/month/weekday.
-- Using a name/label column when the question asks for numerical values or IDs.
-- Using value_counts/mode when the question asks for largest/smallest values.
-- Sorting values when the question asks for most common/most frequent.
-- Using a proxy column when an explicit semantic/status column may exist.
-- Ignoring a literal entity, year, date, or season from the question.
-- Returning the wrong expected answer type.
-- Mishandling dictionary-like string columns.
+Semantic rules:
+- "exactly" means equality, not at least or approximately.
+- "most common" and "most frequent" require frequency counting.
+- "largest" and "smallest" values refer to magnitude, not frequency, unless the question explicitly says common/frequent.
+- "non-unique" or "they can be repeated" means duplicates are allowed; it does not mean most frequent.
+- "unique", "different", and "distinct" require deduplication.
+- For a rank column, rank 1 is normally better than a larger rank unless table evidence states otherwise.
+- Do not turn a correct requested list length into a shorter list through unnecessary grouping.
 
-Decision rules:
-- Use decision="accept" only when the code, prediction, and answer contract are consistent.
-- Use decision="need_evidence" when column meaning, value format, or entity matching is unclear.
-- Use decision="repair" when the code contradicts the answer contract, even if the exact corrected code is not obvious.
-- If the prediction type or returned value does not match the question, repair rather than accept.
-- If the code returns an index but the question asks for a name/category/value, repair.
-- If the code uses a column that is not mentioned in the answer contract, repair or request evidence.
-- Do not request evidence that is already present.
-- Never accept only because the code executed successfully. Executable code can still be semantically wrong.
+Repair eligibility:
+- decision="repair" requires confidence="high".
+- decision="repair" requires at least one concrete evidence item.
+- The repair must address one of the deterministic violations supplied by the runner.
+- Do not use repair for speculative wrong_column, entity_mismatch, or uncertain diagnoses.
+- If more dataframe evidence is needed, use need_evidence rather than repair.
+- Give a concrete, minimal repair instruction. Do not redesign unrelated parts of the code.
 - Request at most 3 verification tool calls.
 
 Return JSON in this format:
 {{
   "decision": "accept | need_evidence | repair",
   "accept": true or false,
+  "confidence": "low | medium | high",
   "reason": "one short explanation",
+  "evidence": [
+    {{
+      "source": "question | code | grounded_schema | pre_code_tool | post_code_tool",
+      "fact": "specific fact supporting the decision"
+    }}
+  ],
   "error_type": "none | wrong_column | wrong_operation | wrong_return_column | wrong_value_mapping | wrong_answer_type | entity_mismatch | code_error | uncertain",
   "answer_contract": {{
     "operation": "short description",
@@ -275,13 +286,11 @@ Return JSON in this format:
     "expected_representation": "number | category | boolean | list[number] | list[category] | unknown",
     "notes": []
   }},
-  "verification_tool_calls": [
-    {{"name": "find_columns", "args": {{"query": "..."}}}}
-  ],
-  "repair_instruction": "If decision is repair, give a concrete instruction for regenerating the code. Otherwise empty string.",
+  "verification_tool_calls": [],
+  "repair_instruction": "If decision is repair, describe only the smallest necessary correction. Otherwise empty string.",
   "must_use_columns": [],
   "avoid_columns": [],
-  "must_return": "Describe what the corrected code should return. If not repairing, empty string."
+  "must_return": "Describe the corrected return value and type. If not repairing, empty string."
 }}
 """.strip()
 
@@ -293,9 +302,11 @@ def make_semantic_react_repair_prompt(
     previous_prediction,
     critic_result,
     tool_observations="",
+    deterministic_violations=None,
 ):
     question = row["question"]
     answer_type = row.get("type", "unknown")
+    deterministic_violations = deterministic_violations or []
 
     columns = list(df.columns)
     dtypes = {c: str(df[c].dtype) for c in df.columns}
@@ -303,16 +314,16 @@ def make_semantic_react_repair_prompt(
 
     answer_contract = critic_result.get("answer_contract", {})
     reason = critic_result.get("reason", "")
+    evidence = critic_result.get("evidence", [])
     repair_instruction = critic_result.get("repair_instruction", "")
     must_use_columns = critic_result.get("must_use_columns", [])
     avoid_columns = critic_result.get("avoid_columns", [])
     must_return = critic_result.get("must_return", "")
 
     return f"""
-You are repairing Pandas code for a table-question-answering task.
+You are making one minimal repair to Pandas code for a table-question-answering task.
 
-The previous code executed, but a post-code semantic critic found that it may not answer the question correctly.
-Rewrite the body of answer(df).
+The previous code executed successfully. Preserve every part of it that the verified critic evidence has not specifically disproved.
 
 Question:
 {question}
@@ -329,7 +340,10 @@ Dtypes:
 Data preview:
 {preview}
 
-Inspection and verification observations:
+Deterministic violations that the repair must resolve:
+{deterministic_violations}
+
+Inspection, grounded-schema, and verification observations:
 {tool_observations if tool_observations else "None"}
 
 Previous code:
@@ -341,10 +355,13 @@ Previous prediction:
 Critic reason:
 {reason}
 
+Critic evidence:
+{evidence}
+
 Answer contract:
 {answer_contract}
 
-Repair instruction:
+Minimal repair instruction:
 {repair_instruction}
 
 Must use columns if relevant:
@@ -359,18 +376,18 @@ Corrected code must return:
 Rules:
 - Return only the body of answer(df), not a full function definition.
 - Do not write markdown.
-- The code must be executable as an indented function body.
 - Always include an explicit return statement.
-- Every variable that is returned must be defined in the code.
-- Use only columns that exist in the dataframe.
-- Do not return dataframe indices unless the question explicitly asks for indices.
-- If you use idxmax or idxmin, store the index, then use it to select the requested return column.
-- If ranking by one column but the question asks for a name/category/value, return the requested column value, not the index.
-- If the question asks for numerical values or IDs, do not return name/label columns.
-- If the question asks for names/labels/months/weekdays, do not return numeric ID columns unless that is the only available representation.
-- If the question asks for largest/smallest values, sort the values themselves unless it asks for most common or most frequent.
-- If the question asks for most common/frequent, use value_counts or mode.
-- Use exact matched values from observations when available.
+- Use only existing dataframe columns.
+- Make the smallest possible change needed to resolve the listed deterministic violation.
+- Preserve existing filters, grouping, duplicate handling, list length, comparison boundaries, unit interpretation, and return column unless the verified evidence explicitly identifies that exact component as wrong.
+- Do not introduce a new dataframe column unless it is present in the supplied verified observations or grounded schema evidence.
+- Do not change equality to an inequality when the question says exactly.
+- Do not change largest/smallest magnitude into most-frequent logic.
+- Do not add grouping merely because the question mentions a season, year, person, or category.
+- Do not perform unit conversion unless the input unit is established by the evidence.
+- If the question requests N items, return exactly N items unless it explicitly permits fewer.
+- If the question requests unique/distinct/different values, deduplicate the output.
+- For top-ranked/best-ranked rows using a rank column, smaller rank values are better unless evidence says otherwise.
 - Return a value compatible with the expected answer type.
 
 Corrected answer(df) body:

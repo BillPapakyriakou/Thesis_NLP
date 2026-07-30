@@ -1,5 +1,9 @@
 import argparse
+import ast
 import json
+import numbers
+import re
+import textwrap
 from datetime import datetime
 
 import numpy as np
@@ -49,6 +53,7 @@ from diploma_tqa.schema.semantic_state import (
 
 from diploma_tqa.schema.grounded_schema import (
     GroundedSchemaIndex,
+    format_grounded_schema_evidence,
 )
 
 def make_json_safe(value):
@@ -117,6 +122,394 @@ def is_execution_error(pred) -> bool:
         pred.startswith("__CODE_ERROR__")
         or pred.startswith("__TIMEOUT__")
     )
+_NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+_NUMBER_TOKEN = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
+
+
+def _parse_number_token(token: str) -> int | None:
+    token = token.strip().lower()
+    if token.isdigit():
+        return int(token)
+    return _NUMBER_WORDS.get(token)
+
+
+def expected_exact_list_length(question: str) -> int | None:
+    """Return an exact requested list length only when wording is unambiguous."""
+
+    q = str(question).lower()
+    non_exact_markers = (
+        "up to",
+        "at most",
+        "no more than",
+        "if available",
+        "if there are fewer",
+        "if there are less",
+        "or fewer",
+        "or less",
+    )
+    if any(marker in q for marker in non_exact_markers):
+        return None
+
+    patterns = (
+        rf"\b(?:top|bottom|first|last)\s+({_NUMBER_TOKEN})\b",
+        rf"\b(?:the\s+)?({_NUMBER_TOKEN})\s+"
+        rf"(?:largest|smallest|highest|lowest|top|bottom)\b",
+        rf"\blist\s+(?:the\s+)?({_NUMBER_TOKEN})\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, q)
+        if match:
+            return _parse_number_token(match.group(1))
+    return None
+
+
+def output_type_matches(pred, answer_type: str) -> bool:
+    answer_type = str(answer_type or "unknown").strip().lower()
+
+    if answer_type == "boolean":
+        return isinstance(pred, (bool, np.bool_))
+
+    if answer_type == "number":
+        return (
+            isinstance(pred, numbers.Number)
+            and not isinstance(pred, (bool, np.bool_))
+        )
+
+    if answer_type == "category":
+        return isinstance(pred, str) and not is_execution_error(pred)
+
+    if answer_type == "list[number]":
+        return isinstance(pred, list) and all(
+            isinstance(item, numbers.Number)
+            and not isinstance(item, (bool, np.bool_))
+            for item in pred
+        )
+
+    if answer_type == "list[category]":
+        return isinstance(pred, list) and all(
+            isinstance(item, str) for item in pred
+        )
+
+    return True
+
+
+def _question_requires_unique_values(question: str) -> bool:
+    q = str(question).lower()
+    if "non-unique" in q or "non unique" in q:
+        return False
+    return any(word in q for word in ("unique", "distinct", "different"))
+
+
+def _contains_direct_row_index_return(
+    code: str,
+    answer_type: str,
+    question: str = "",
+) -> bool:
+    """Detect a raw dataframe row index returned as a category answer.
+
+    ``df[metric].idxmax()`` returns a row index and is suspicious when the
+    question asks for a name/category. In contrast,
+    ``df[category].value_counts().idxmax()`` and grouped ``idxmax`` calls
+    return category/group labels and must not be flagged.
+    """
+
+    if str(answer_type).lower() != "category":
+        return False
+
+    q = str(question).lower()
+    if any(phrase in q for phrase in ("index", "row number", "row id")):
+        return False
+
+    body = textwrap.dedent(str(code or "")).strip("\n")
+    if not body:
+        return False
+
+    try:
+        wrapped = "def _candidate(df):\n" + textwrap.indent(body, "    ")
+        tree = ast.parse(wrapped)
+    except SyntaxError:
+        return False
+
+    aggregate_methods = {
+        "value_counts",
+        "groupby",
+        "agg",
+        "aggregate",
+        "size",
+        "count",
+        "nunique",
+        "sum",
+        "mean",
+        "median",
+        "mode",
+        "max",
+        "min",
+    }
+    aggregate_series_vars: set[str] = set()
+    raw_series_vars: set[str] = set()
+    direct_index_vars: set[str] = set()
+
+    def has_df_reference(node: ast.AST) -> bool:
+        return any(
+            isinstance(child, ast.Name) and child.id == "df"
+            for child in ast.walk(node)
+        )
+
+    def has_aggregate_operation(node: ast.AST) -> bool:
+        return any(
+            isinstance(child, ast.Attribute)
+            and child.attr in aggregate_methods
+            for child in ast.walk(node)
+        )
+
+    def assigned_names(node: ast.Assign | ast.AnnAssign) -> set[str]:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        return {target.id for target in targets if isinstance(target, ast.Name)}
+
+    # Track whether intermediate Series variables are raw row-aligned Series
+    # or aggregate/category-label Series. Unknown variables are not flagged.
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        if value is None:
+            continue
+        names = assigned_names(node)
+        if has_aggregate_operation(value):
+            aggregate_series_vars.update(names)
+        elif has_df_reference(value):
+            raw_series_vars.update(names)
+
+    def is_direct_index_call(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Call):
+            return False
+        if not isinstance(node.func, ast.Attribute):
+            return False
+        if node.func.attr not in {"idxmax", "idxmin"}:
+            return False
+
+        receiver = node.func.value
+        if has_aggregate_operation(receiver):
+            return False
+        if isinstance(receiver, ast.Name):
+            if receiver.id in aggregate_series_vars:
+                return False
+            return receiver.id in raw_series_vars
+        return has_df_reference(receiver)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and is_direct_index_call(node.value):
+            direct_index_vars.update(assigned_names(node))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Return):
+            continue
+        if is_direct_index_call(node.value):
+            return True
+        if isinstance(node.value, ast.Name) and node.value.id in direct_index_vars:
+            return True
+
+    return False
+
+def _rank_direction_is_suspicious(question: str, code: str, columns) -> bool:
+    q = str(question).lower()
+    rank_request = re.search(
+        rf"\b(?:top|best|highest)\s*(?:-\s*)?"
+        rf"(?:(?:{_NUMBER_TOKEN})\s+)?ranked\b",
+        q,
+    )
+    if not rank_request:
+        return False
+
+    rank_columns = {
+        str(column)
+        for column in columns
+        if "rank" in re.sub(r"[^a-z0-9]+", " ", str(column).lower()).split()
+    }
+    used_columns = extract_used_columns(code, columns)
+    if not (rank_columns & used_columns):
+        return False
+
+    lowered = str(code).lower()
+    return ".nlargest(" in lowered or "ascending=false" in lowered.replace(" ", "")
+
+
+def _repair_introduces_operation_drift(original_code: str, candidate_code: str) -> list[str]:
+    """Block broad semantic rewrites for the narrow safe repair classes."""
+
+    original = re.sub(r"\s+", "", str(original_code or "").lower())
+    candidate = re.sub(r"\s+", "", str(candidate_code or "").lower())
+    markers = (
+        ".groupby(",
+        ".value_counts(",
+        ".mode(",
+    )
+    return [marker for marker in markers if marker not in original and marker in candidate]
+
+def extract_used_columns(code: str, columns) -> set[str]:
+    available = {str(column) for column in columns}
+    quoted = set(re.findall(r"['\"]([^'\"]+)['\"]", str(code or "")))
+    return quoted & available
+
+
+def candidate_contract_violations(
+    *,
+    question: str,
+    answer_type: str,
+    pred,
+    code: str,
+    columns,
+    strict_list_length: bool = True,
+) -> set[str]:
+    """Objective checks only; no LLM judgement is used here."""
+
+    violations: set[str] = set()
+
+    if is_execution_error(pred):
+        violations.add("execution_error")
+        return violations
+
+    if not output_type_matches(pred, answer_type):
+        violations.add("wrong_output_type")
+
+    requested_length = expected_exact_list_length(question)
+    if requested_length is not None and isinstance(pred, list):
+        if len(pred) > requested_length:
+            violations.add("wrong_list_length")
+        elif strict_list_length and len(pred) < requested_length:
+            violations.add("wrong_list_length")
+
+    if _question_requires_unique_values(question) and isinstance(pred, list):
+        normalised = [json.dumps(make_json_safe(item), sort_keys=True, ensure_ascii=False) for item in pred]
+        if len(normalised) != len(set(normalised)):
+            violations.add("duplicates_when_unique_required")
+
+    q = str(question).lower()
+    compact_code = re.sub(r"\s+", "", str(code or ""))
+    if "exactly" in q and (">=" in compact_code or "<=" in compact_code):
+        violations.add("exactly_uses_inequality")
+
+    if _contains_direct_row_index_return(code, answer_type, question):
+        violations.add("raw_row_index_return")
+
+    if _rank_direction_is_suspicious(question, code, columns):
+        violations.add("rank_direction")
+
+    return violations
+
+
+def semantic_critic_trigger_reasons(
+    *,
+    question: str,
+    answer_type: str,
+    pred,
+    code: str,
+    columns,
+) -> set[str]:
+    """Only objective contract violations trigger the conservative critic."""
+
+    return candidate_contract_violations(
+        question=question,
+        answer_type=answer_type,
+        pred=pred,
+        code=code,
+        columns=columns,
+        strict_list_length=False,
+    )
+
+
+def _normalise_error_types(value) -> set[str]:
+    if isinstance(value, list):
+        parts = [str(item) for item in value]
+    else:
+        parts = re.split(r"[|,/]", str(value or "uncertain"))
+    return {part.strip().lower() for part in parts if part.strip()}
+
+
+def _evidence_is_nonempty(value) -> bool:
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if isinstance(item, dict) and str(item.get("fact", "")).strip():
+            return True
+        if isinstance(item, str) and item.strip():
+            return True
+    return False
+
+
+def _error_types_support_violations(
+    error_types: set[str],
+    violations: set[str],
+) -> bool:
+    blocked = {
+        "uncertain",
+        "wrong_column",
+        "wrong_value_mapping",
+        "entity_mismatch",
+        "code_error",
+    }
+    if error_types & blocked:
+        return False
+
+    type_or_shape = {
+        "wrong_output_type",
+        "wrong_list_length",
+        "duplicates_when_unique_required",
+    }
+    operation = {
+        "exactly_uses_inequality",
+        "rank_direction",
+    }
+    return_column = {"raw_row_index_return"}
+
+    if violations & type_or_shape and not (
+        {"wrong_answer_type", "wrong_operation"} & error_types
+    ):
+        return False
+    if violations & operation and "wrong_operation" not in error_types:
+        return False
+    if violations & return_column and "wrong_return_column" not in error_types:
+        return False
+
+    return bool(violations)
+
+
+def _format_grounded_evidence_for_critic(grounded_schema) -> str:
+    if not grounded_schema:
+        return "None"
+    try:
+        rendered = format_grounded_schema_evidence(grounded_schema)
+    except Exception:
+        rendered = ""
+    if rendered:
+        return rendered
+    return json.dumps(
+        make_json_safe(grounded_schema),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _record_verified_calls(calls, verified_columns: set[str]) -> None:
+    for call in calls or []:
+        if not isinstance(call, dict):
+            continue
+        name = call.get("name")
+        args = call.get("args") or {}
+        if name == "profile_column" and isinstance(args.get("column"), str):
+            verified_columns.add(args["column"])
+
 def semantic_state_is_usable(
     semantic_state: dict | None,
     semantic_state_data: dict | None,
@@ -281,7 +674,18 @@ def run_semantic_critic_loop(
     attempts,
     args,
     react_max_tool_calls,
+    pre_code_tool_calls=None,
+    grounded_schema=None,
 ):
+    """Conservative post-code critic.
+
+    The original successful prediction is always the default. A repaired
+    candidate is adopted only when an objective contract violation is present,
+    the critic gives a high-confidence supported diagnosis, and deterministic
+    validation proves that the candidate resolves the violation without
+    introducing another one.
+    """
+
     semantic_react_steps = []
     post_code_observations_list = []
 
@@ -295,32 +699,81 @@ def run_semantic_critic_loop(
     ):
         return code, pred, success, error, semantic_react_steps, ""
 
+    question = row["question"]
+    answer_type = row.get("type", "unknown")
+    columns = list(df.columns)
+
+    original_code = code
+    original_pred = pred
+    original_violations = semantic_critic_trigger_reasons(
+        question=question,
+        answer_type=answer_type,
+        pred=original_pred,
+        code=original_code,
+        columns=columns,
+    )
+
+    # Do not expose already contract-consistent answers to speculative repair.
+    if not original_violations:
+        return code, pred, success, error, semantic_react_steps, ""
+
+    grounded_evidence = _format_grounded_evidence_for_critic(grounded_schema)
+
+    verified_columns: set[str] = set()
+    _record_verified_calls(pre_code_tool_calls or [], verified_columns)
+    if (grounded_schema or {}).get("active"):
+        for column_info in (grounded_schema or {}).get("columns", []):
+            if (
+                isinstance(column_info, dict)
+                and isinstance(column_info.get("exact_name"), str)
+            ):
+                verified_columns.add(column_info["exact_name"])
+
+    executed_call_keys = {
+        tool_call_key(call)
+        for call in (pre_code_tool_calls or [])
+        if isinstance(call, dict)
+    }
+
     semantic_repair_count = 0
     semantic_critic_max_steps = 2
 
     for semantic_step_idx in range(1, semantic_critic_max_steps + 1):
         try:
             critic_prompt = make_semantic_react_critic_prompt(
-                question=row["question"],
-                answer_type=row.get("type", "unknown"),
-                columns=list(df.columns),
+                question=question,
+                answer_type=answer_type,
+                columns=columns,
                 dtypes={c: str(df[c].dtype) for c in df.columns},
                 preview=df.head(5).to_string(index=False),
                 tool_observations=tool_observations,
                 post_code_observations="\n\n".join(post_code_observations_list),
-                generated_code=code,
-                prediction=pred,
+                grounded_schema_evidence=grounded_evidence,
+                generated_code=original_code,
+                prediction=original_pred,
                 execution_error=None,
+                deterministic_violations=sorted(original_violations),
             )
 
             critic_raw = llm.generate(critic_prompt)
-
             critic_result = parse_semantic_critic(
                 critic_raw,
                 max_tool_calls=react_max_tool_calls,
             )
 
-            decision = critic_result.get("decision", "accept")
+            # Preserve conservative fields even if the existing parser ignores
+            # unknown JSON keys.
+            raw_object = parse_json_object(critic_raw)
+            if isinstance(raw_object, dict):
+                for field in ("confidence", "evidence"):
+                    if field in raw_object:
+                        critic_result[field] = raw_object[field]
+
+            decision = str(critic_result.get("decision", "accept")).lower()
+            confidence = str(critic_result.get("confidence", "low")).lower()
+            error_types = _normalise_error_types(
+                critic_result.get("error_type", "uncertain")
+            )
 
             step_log = {
                 "stage": f"semantic_critic_{semantic_step_idx}",
@@ -328,133 +781,226 @@ def run_semantic_critic_loop(
                 "critic_result": critic_result,
                 "decision": decision,
                 "accepted": decision == "accept",
+                "trigger_reasons": sorted(original_violations),
                 "tool_calls": [],
                 "observation": "",
+                "verified_columns": sorted(verified_columns),
             }
 
-            # Case 1: critic accepts current prediction.
             if decision == "accept":
                 semantic_react_steps.append(step_log)
                 break
 
-            # Case 2: critic wants more evidence before deciding.
-            if decision == "need_evidence":
-                verification_calls = critic_result.get("verification_tool_calls", [])
+            verification_calls = critic_result.get("verification_tool_calls", [])
+            new_verification_calls = []
+            for call in verification_calls:
+                if not isinstance(call, dict):
+                    continue
+                key = tool_call_key(call)
+                if key in executed_call_keys:
+                    continue
+                executed_call_keys.add(key)
+                new_verification_calls.append(call)
 
-                if verification_calls:
-                    observation = execute_tool_calls(verification_calls, df)
+            # Both need_evidence and repair must collect proposed new evidence
+            # before the critic can change a successful answer.
+            if new_verification_calls:
+                observation = execute_tool_calls(new_verification_calls, df)
+                _record_verified_calls(new_verification_calls, verified_columns)
 
-                    post_code_observations_list.append(
-                        f"Post-code semantic critic step {semantic_step_idx} observations:\n{observation}"
-                    )
-
-                    step_log["tool_calls"] = verification_calls
-                    step_log["observation"] = observation
-                    semantic_react_steps.append(step_log)
-
-                    if semantic_step_idx < semantic_critic_max_steps:
-                        continue
-
-                # If final step still wants evidence, force a repair attempt.
-                critic_result["decision"] = "repair"
-                critic_result["accept"] = False
-                decision = "repair"
-
-                if not critic_result.get("repair_instruction"):
-                    critic_result["repair_instruction"] = (
-                        "The critic could not confidently accept the previous code. "
-                        "Rewrite the code using the answer contract and all available observations. "
-                        "Make sure the computation columns and return columns match the question."
-                    )
-
-                if not critic_result.get("must_return"):
-                    critic_result["must_return"] = (
-                        "Return exactly the requested answer value with the expected answer type."
-                    )
-
-                step_log["converted_need_evidence_to_repair"] = True
-                # Do not append/break here; let execution fall through into the repair block.
-
-            # Case 3: critic has enough evidence and requests repair.
-            if decision == "repair":
-                if semantic_repair_count >= args.post_code_react_max_retries:
-                    step_log["repair_skipped"] = "Maximum semantic repair retries reached."
-                    semantic_react_steps.append(step_log)
-                    break
-
-                if not critic_result.get("repair_instruction"):
-                    step_log["repair_skipped"] = "No repair instruction provided."
-                    semantic_react_steps.append(step_log)
-                    break
-
-                semantic_repair_count += 1
-
-                combined_observations = tool_observations
-
-                if post_code_observations_list:
-                    combined_observations = (
-                        f"{tool_observations}\n\n"
-                        "Post-code verification observations:\n"
-                        f"{chr(10).join(post_code_observations_list)}"
-                    )
-
-                semantic_fix_prompt = make_semantic_react_repair_prompt(
-                    row=row,
-                    df=df,
-                    previous_code=code,
-                    previous_prediction=pred,
-                    critic_result=critic_result,
-                    tool_observations=combined_observations,
+                labelled_observation = (
+                    f"Post-code semantic critic step {semantic_step_idx} "
+                    f"observations:\n{observation}"
                 )
-
-                semantic_raw = llm.generate(semantic_fix_prompt)
-                semantic_code = extract_answer_body(semantic_raw)
-                semantic_pred = execute_answer_body(semantic_code, df)
-
-                step_log.update(
-                    {
-                        "repair_raw_response": semantic_raw,
-                        "repair_code": semantic_code,
-                        "repair_prediction": semantic_pred,
-                        "repair_success": not is_execution_error(semantic_pred),
-                    }
-                )
-
+                post_code_observations_list.append(labelled_observation)
+                step_log["tool_calls"] = new_verification_calls
+                step_log["observation"] = observation
+                step_log["verified_columns"] = sorted(verified_columns)
+                step_log["kept_previous_prediction"] = True
                 semantic_react_steps.append(step_log)
 
-                attempts.append(
-                    {
-                        "stage": f"semantic_react_fix_{semantic_repair_count}",
-                        "raw_response": semantic_raw,
-                        "code": semantic_code,
-                        "prediction": semantic_pred,
-                        "critic_result": critic_result,
-                        "post_code_observations": "\n\n".join(post_code_observations_list),
-                    }
-                )
-
-                # Keep old successful prediction if repair crashes.
-                if not is_execution_error(semantic_pred):
-                    code = semantic_code
-                    pred = semantic_pred
-                    success = True
-                    error = None
-                    break
-
-                step_log["kept_previous_prediction"] = True
+                if semantic_step_idx < semantic_critic_max_steps:
+                    continue
                 break
 
-        except Exception as e:
+            if decision == "need_evidence":
+                step_log["kept_previous_prediction"] = True
+                step_log["repair_skipped"] = (
+                    "The critic remained uncertain without new evidence."
+                )
+                semantic_react_steps.append(step_log)
+                break
+
+            if decision != "repair":
+                step_log["kept_previous_prediction"] = True
+                step_log["repair_skipped"] = "Unsupported critic decision."
+                semantic_react_steps.append(step_log)
+                break
+
+            if semantic_repair_count >= args.post_code_react_max_retries:
+                step_log["kept_previous_prediction"] = True
+                step_log["repair_skipped"] = (
+                    "Maximum semantic repair retries reached."
+                )
+                semantic_react_steps.append(step_log)
+                break
+
+            if confidence != "high":
+                step_log["kept_previous_prediction"] = True
+                step_log["repair_skipped"] = (
+                    f"Critic confidence was {confidence!r}, not high."
+                )
+                semantic_react_steps.append(step_log)
+                break
+
+            if not _evidence_is_nonempty(critic_result.get("evidence")):
+                step_log["kept_previous_prediction"] = True
+                step_log["repair_skipped"] = (
+                    "No concrete supporting evidence was supplied."
+                )
+                semantic_react_steps.append(step_log)
+                break
+
+            if not _error_types_support_violations(
+                error_types,
+                original_violations,
+            ):
+                step_log["kept_previous_prediction"] = True
+                step_log["repair_skipped"] = (
+                    "The critic error type is not safe for the objective "
+                    "contract violation."
+                )
+                semantic_react_steps.append(step_log)
+                break
+
+            if not critic_result.get("repair_instruction"):
+                step_log["kept_previous_prediction"] = True
+                step_log["repair_skipped"] = "No concrete repair instruction."
+                semantic_react_steps.append(step_log)
+                break
+
+            semantic_repair_count += 1
+
+            combined_sections = [grounded_evidence]
+            if tool_observations:
+                combined_sections.append(tool_observations)
+            if post_code_observations_list:
+                combined_sections.extend(post_code_observations_list)
+            combined_observations = "\n\n".join(
+                section for section in combined_sections if section and section != "None"
+            )
+
+            semantic_fix_prompt = make_semantic_react_repair_prompt(
+                row=row,
+                df=df,
+                previous_code=original_code,
+                previous_prediction=original_pred,
+                critic_result=critic_result,
+                tool_observations=combined_observations,
+                deterministic_violations=sorted(original_violations),
+            )
+
+            semantic_raw = llm.generate(semantic_fix_prompt)
+            semantic_code = extract_answer_body(semantic_raw)
+            semantic_pred = execute_answer_body(semantic_code, df)
+
+            candidate_violations = candidate_contract_violations(
+                question=question,
+                answer_type=answer_type,
+                pred=semantic_pred,
+                code=semantic_code,
+                columns=columns,
+            )
+            original_used_columns = extract_used_columns(original_code, columns)
+            candidate_used_columns = extract_used_columns(semantic_code, columns)
+            introduced_columns = candidate_used_columns - original_used_columns
+            removed_columns = original_used_columns - candidate_used_columns
+            unverified_columns = introduced_columns - verified_columns
+            operation_drift = _repair_introduces_operation_drift(
+                original_code,
+                semantic_code,
+            )
+
+            rejection_reasons = []
+            if is_execution_error(semantic_pred):
+                rejection_reasons.append("candidate execution failed")
+            if candidate_violations:
+                rejection_reasons.append(
+                    "candidate still violates: "
+                    + ", ".join(sorted(candidate_violations))
+                )
+            if unverified_columns:
+                rejection_reasons.append(
+                    "candidate introduced unverified columns: "
+                    + ", ".join(sorted(unverified_columns))
+                )
+            if removed_columns:
+                rejection_reasons.append(
+                    "candidate removed original dataframe columns: "
+                    + ", ".join(sorted(removed_columns))
+                )
+            if operation_drift:
+                rejection_reasons.append(
+                    "candidate introduced broad operation drift: "
+                    + ", ".join(operation_drift)
+                )
+            if make_json_safe(semantic_pred) == make_json_safe(original_pred):
+                rejection_reasons.append("candidate prediction did not change")
+
+            adopted = not rejection_reasons
+            step_log.update(
+                {
+                    "repair_raw_response": semantic_raw,
+                    "repair_code": semantic_code,
+                    "repair_prediction": semantic_pred,
+                    "repair_success": not is_execution_error(semantic_pred),
+                    "candidate_violations": sorted(candidate_violations),
+                    "introduced_columns": sorted(introduced_columns),
+                    "removed_columns": sorted(removed_columns),
+                    "unverified_columns": sorted(unverified_columns),
+                    "operation_drift": operation_drift,
+                    "repair_adopted": adopted,
+                    "repair_rejection_reasons": rejection_reasons,
+                }
+            )
+            semantic_react_steps.append(step_log)
+
+            attempts.append(
+                {
+                    "stage": f"semantic_react_fix_{semantic_repair_count}",
+                    "raw_response": semantic_raw,
+                    "code": semantic_code,
+                    "prediction": semantic_pred,
+                    "critic_result": critic_result,
+                    "candidate_violations": sorted(candidate_violations),
+                    "repair_adopted": adopted,
+                    "repair_rejection_reasons": rejection_reasons,
+                    "post_code_observations": "\n\n".join(
+                        post_code_observations_list
+                    ),
+                }
+            )
+
+            if adopted:
+                code = semantic_code
+                pred = semantic_pred
+                success = True
+                error = None
+            else:
+                step_log["kept_previous_prediction"] = True
+            break
+
+        except Exception as exc:
             semantic_react_steps.append(
                 {
                     "stage": f"semantic_critic_{semantic_step_idx}",
-                    "error": str(e),
+                    "error": str(exc),
+                    "kept_previous_prediction": True,
                 }
             )
             break
 
     post_code_observations = "\n\n".join(post_code_observations_list)
-
     return code, pred, success, error, semantic_react_steps, post_code_observations
 
 
@@ -1045,6 +1591,8 @@ def main():
                         attempts=attempts,
                         args=args,
                         react_max_tool_calls=REACT_MAX_TOOL_CALLS,
+                        pre_code_tool_calls=tool_calls,
+                        grounded_schema=grounded_schema_data,
                     )
 
 
