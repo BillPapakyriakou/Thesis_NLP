@@ -453,21 +453,20 @@ def semantic_critic_trigger_reasons(
         strict_list_length=True,
     )
 
-    answer_type_normalized = str(answer_type or "").lower()
-
-    # Suspicious empty list for a question expecting a list.
-    if (
-        answer_type_normalized.startswith("list[")
-        and isinstance(pred, list)
-        and len(pred) == 0
-    ):
-        reasons.add("suspicious_empty_list")
-
-    # Suspiciously large list, but only for non-grouped questions.
     question_normalized = str(question).lower()
+
     grouped_question = any(
         marker in question_normalized
-        for marker in ("for each", "per ", "by each", "for every")
+        for marker in (
+            "for each",
+            "for every",
+            "per ",
+            "by each",
+            "each category",
+            "each class",
+            "each group",
+            "each region",
+        )
     )
 
     requested_length = expected_exact_list_length(question)
