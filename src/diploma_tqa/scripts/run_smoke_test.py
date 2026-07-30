@@ -450,34 +450,32 @@ def semantic_critic_trigger_reasons(
         pred=pred,
         code=code,
         columns=columns,
-        strict_list_length=True,
-    )
-
-    question_normalized = str(question).lower()
-
-    grouped_question = any(
-        marker in question_normalized
-        for marker in (
-            "for each",
-            "for every",
-            "per ",
-            "by each",
-            "each category",
-            "each class",
-            "each group",
-            "each region",
-        )
+        strict_list_length=False,  # Restore the 0.841 behavior.
     )
 
     requested_length = expected_exact_list_length(question)
+    q = str(question).casefold()
+    code_text = str(code).casefold()
 
     if (
         requested_length is not None
         and isinstance(pred, list)
-        and not grouped_question
-        and len(pred) > requested_length * 2
+        and 0 < len(pred) < requested_length
+        and (
+            "unique(" in code_text
+            or "drop_duplicates(" in code_text
+        )
+        and not any(
+            term in q
+            for term in (
+                "unique",
+                "distinct",
+                "without duplicates",
+                "no duplicates",
+            )
+        )
     ):
-        reasons.add("suspiciously_large_list")
+        reasons.add("underfill_after_unrequested_deduplication")
 
     return reasons
 

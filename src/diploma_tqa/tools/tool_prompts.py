@@ -278,6 +278,8 @@ Repair eligibility:
 - If more dataframe evidence is needed, use need_evidence rather than repair.
 - Give a concrete, minimal repair instruction. Do not redesign unrelated parts of the code.
 - If the only deterministic violation is wrong_list_length and the current code already produces a plausible ordered sequence, repair only the length: preserve the existing filtering, membership, and order, and return the first requested N values. Do not re-interpret the whole question.
+- If an underfilled list uses unique() or drop_duplicates() without a uniqueness request, repair only when evidence confirms at least N matching rows; otherwise accept.
+- Do not repair a nested multi-column result merely by flattening it; repair only when evidence identifies the requested return column.
 - Request at most 3 verification tool calls.
 
 Return one compact JSON object in exactly this shape. Use one-line string values, escape embedded quotes, and do not add comments or markdown:
@@ -401,6 +403,8 @@ Rules:
 - Do not perform unit conversion unless the input unit is established by the evidence.
 - If the question requests N items, return exactly N items unless it explicitly permits fewer.
 - If the question requests unique/distinct/different values, deduplicate the output.
+- When verified evidence says underfilling was caused by unrequested unique() or drop_duplicates(), remove only that deduplication and preserve all other logic.
+- Never flatten a nested multi-column result unless the verified critic evidence clearly identifies the requested return column.
 - For top-ranked/best-ranked rows using a rank column, smaller rank values are better unless evidence says otherwise.
 - For list answers, return a native Python list. When slicing a NumPy array, pandas Index, Series, or unique() result, call .tolist() before returning it.
 - Return a value compatible with the expected answer type.
