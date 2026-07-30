@@ -168,8 +168,20 @@ def make_semantic_react_critic_prompt(
     post_code_observations="",
     grounded_schema_evidence="",
     deterministic_violations=None,
+    final_decision=False,
 ):
     deterministic_violations = deterministic_violations or []
+    final_decision_instruction = (
+        """
+FINAL DECISION TURN:
+- This is the last critic turn. Do not choose need_evidence.
+- Do not request verification_tool_calls.
+- Choose accept if the existing evidence is insufficient.
+- Choose repair only for a high-confidence minimal correction supported by the existing evidence.
+""".strip()
+        if final_decision
+        else ""
+    )
 
     return f"""
 You are a conservative post-code semantic critic for a Pandas table-question-answering system.
@@ -213,6 +225,8 @@ Pre-code inspection observations:
 Post-code verification observations:
 {post_code_observations if post_code_observations else "None"}
 
+{final_decision_instruction}
+
 Generated code:
 {generated_code}
 
@@ -239,6 +253,8 @@ Preservation rules:
 - Do not repair a code path that is plausibly consistent with the question and evidence.
 - A different interpretation is not enough to repair.
 - If uncertainty remains, use need_evidence. If no new useful evidence can be requested, accept.
+- Treat a case-insensitive exact entity match in post-code observations as positive evidence.
+- If a case-sensitive lookup returned None but verified evidence contains the same normalized entity and the requested scalar field, request a minimal case-insensitive lookup repair.
 - Never change a column without verified evidence that the replacement represents the question better.
 - Additional helper columns or intermediate computations are not inherently errors.
 - Absence from the five-row preview is not evidence of absence from the dataframe.
@@ -261,6 +277,7 @@ Repair eligibility:
 - Do not use repair for speculative wrong_column, entity_mismatch, or uncertain diagnoses.
 - If more dataframe evidence is needed, use need_evidence rather than repair.
 - Give a concrete, minimal repair instruction. Do not redesign unrelated parts of the code.
+- If the only deterministic violation is wrong_list_length and the current code already produces a plausible ordered sequence, repair only the length: preserve the existing filtering, membership, and order, and return the first requested N values. Do not re-interpret the whole question.
 - Request at most 3 verification tool calls.
 
 Return one compact JSON object in exactly this shape. Use one-line string values, escape embedded quotes, and do not add comments or markdown:

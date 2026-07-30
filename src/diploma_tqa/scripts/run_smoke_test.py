@@ -879,7 +879,8 @@ def run_semantic_critic_loop(
     }
 
     semantic_repair_count = 0
-    semantic_critic_max_steps = 2
+    # Allow up to two evidence-gathering turns plus one final decision turn.
+    semantic_critic_max_steps = 3
 
     for semantic_step_idx in range(1, semantic_critic_max_steps + 1):
         try:
@@ -896,6 +897,7 @@ def run_semantic_critic_loop(
                 prediction=original_pred,
                 execution_error=None,
                 deterministic_violations=sorted(original_violations),
+                final_decision=(semantic_step_idx == semantic_critic_max_steps),
             )
 
             critic_raw = llm.generate(critic_prompt)
