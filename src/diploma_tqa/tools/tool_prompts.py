@@ -402,6 +402,7 @@ Rules:
 - If the question requests N items, return exactly N items unless it explicitly permits fewer.
 - If the question requests unique/distinct/different values, deduplicate the output.
 - For top-ranked/best-ranked rows using a rank column, smaller rank values are better unless evidence says otherwise.
+- For list answers, return a native Python list. When slicing a NumPy array, pandas Index, Series, or unique() result, call .tolist() before returning it.
 - Return a value compatible with the expected answer type.
 
 Corrected answer(df) body:
