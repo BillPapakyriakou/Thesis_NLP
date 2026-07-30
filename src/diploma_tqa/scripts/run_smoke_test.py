@@ -444,16 +444,43 @@ def semantic_critic_trigger_reasons(
     code: str,
     columns,
 ) -> set[str]:
-    """Only objective contract violations trigger the conservative critic."""
-
-    return candidate_contract_violations(
+    reasons = candidate_contract_violations(
         question=question,
         answer_type=answer_type,
         pred=pred,
         code=code,
         columns=columns,
-        strict_list_length=False,
+        strict_list_length=True,
     )
+
+    answer_type_normalized = str(answer_type or "").lower()
+
+    # Suspicious empty list for a question expecting a list.
+    if (
+        answer_type_normalized.startswith("list[")
+        and isinstance(pred, list)
+        and len(pred) == 0
+    ):
+        reasons.add("suspicious_empty_list")
+
+    # Suspiciously large list, but only for non-grouped questions.
+    question_normalized = str(question).lower()
+    grouped_question = any(
+        marker in question_normalized
+        for marker in ("for each", "per ", "by each", "for every")
+    )
+
+    requested_length = expected_exact_list_length(question)
+
+    if (
+        requested_length is not None
+        and isinstance(pred, list)
+        and not grouped_question
+        and len(pred) > requested_length * 2
+    ):
+        reasons.add("suspiciously_large_list")
+
+    return reasons
 
 
 def _normalise_error_types(value) -> set[str]:
