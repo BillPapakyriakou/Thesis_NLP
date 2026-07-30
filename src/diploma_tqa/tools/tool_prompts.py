@@ -263,35 +263,32 @@ Repair eligibility:
 - Give a concrete, minimal repair instruction. Do not redesign unrelated parts of the code.
 - Request at most 3 verification tool calls.
 
-Return JSON in this format:
+Return one compact JSON object in exactly this shape. Use one-line string values, escape embedded quotes, and do not add comments or markdown:
 {{
-  "decision": "accept | need_evidence | repair",
-  "accept": true or false,
-  "confidence": "low | medium | high",
-  "reason": "one short explanation",
-  "evidence": [
-    {{
-      "source": "question | code | grounded_schema | pre_code_tool | post_code_tool",
-      "fact": "specific fact supporting the decision"
-    }}
-  ],
-  "error_type": "none | wrong_column | wrong_operation | wrong_return_column | wrong_value_mapping | wrong_answer_type | entity_mismatch | code_error | uncertain",
-  "answer_contract": {{
-    "operation": "short description",
-    "filter_columns": [],
-    "group_columns": [],
-    "aggregate_columns": [],
-    "sort_columns": [],
-    "return_columns": [],
-    "expected_representation": "number | category | boolean | list[number] | list[category] | unknown",
-    "notes": []
-  }},
+  "decision": "accept",
+  "confidence": "high",
+  "reason": "short explanation",
+  "evidence": [],
+  "error_type": "none",
   "verification_tool_calls": [],
-  "repair_instruction": "If decision is repair, describe only the smallest necessary correction. Otherwise empty string.",
+  "repair_instruction": "",
   "must_use_columns": [],
   "avoid_columns": [],
-  "must_return": "Describe the corrected return value and type. If not repairing, empty string."
+  "must_return": ""
 }}
+
+Replace the example values with your decision. Allowed values are:
+- decision: accept, need_evidence, repair
+- confidence: low, medium, high
+- error_type: none, wrong_column, wrong_operation, wrong_return_column, wrong_value_mapping, wrong_answer_type, entity_mismatch, code_error, uncertain
+
+For evidence, use a JSON array of short strings. Example:
+["The expected type is list[category] but the prediction contains 6 values when exactly 5 were requested."]
+
+For verification_tool_calls, use objects such as:
+[{{"name": "profile_column", "args": {{"column": "Lifter Name"}}}}]
+
+The output must be parseable by json.loads without repair.
 """.strip()
 
 

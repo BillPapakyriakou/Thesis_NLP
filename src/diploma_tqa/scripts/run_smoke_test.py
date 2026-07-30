@@ -161,6 +161,22 @@ def expected_exact_list_length(question: str) -> int | None:
     if any(marker in q for marker in non_exact_markers):
         return None
 
+    # A number qualified by a group phrase is a per-group count, not the
+    # exact length of the final flattened answer. For example,
+    # "the 3 largest gaps for each weight class" may legitimately return
+    # more than three values overall.
+    grouped_count_markers = (
+        "for each",
+        "for every",
+        "in each",
+        "in every",
+        "per group",
+        "per class",
+        "per category",
+    )
+    if any(marker in q for marker in grouped_count_markers):
+        return None
+
     patterns = (
         rf"\b(?:top|bottom|first|last)\s+({_NUMBER_TOKEN})\b",
         rf"\b(?:the\s+)?({_NUMBER_TOKEN})\s+"
@@ -187,7 +203,14 @@ def output_type_matches(pred, answer_type: str) -> bool:
         )
 
     if answer_type == "category":
-        return isinstance(pred, str) and not is_execution_error(pred)
+        # DataBench category answers are labels, but labels are not always
+        # strings (years and integer-coded classes are common). Reject only
+        # containers and execution errors here.
+        return (
+            pred is not None
+            and not is_execution_error(pred)
+            and not isinstance(pred, (list, tuple, set, dict, np.ndarray, pd.Series, pd.DataFrame))
+        )
 
     if answer_type == "list[number]":
         return isinstance(pred, list) and all(
@@ -197,8 +220,12 @@ def output_type_matches(pred, answer_type: str) -> bool:
         )
 
     if answer_type == "list[category]":
-        return isinstance(pred, list) and all(
-            isinstance(item, str) for item in pred
+        if not isinstance(pred, (list, tuple, np.ndarray, pd.Series, pd.Index)):
+            return False
+        return all(
+            item is not None
+            and not isinstance(item, (list, tuple, set, dict, np.ndarray, pd.Series, pd.DataFrame))
+            for item in list(pred)
         )
 
     return True
@@ -510,6 +537,122 @@ def _record_verified_calls(calls, verified_columns: set[str]) -> None:
         if name == "profile_column" and isinstance(args.get("column"), str):
             verified_columns.add(args["column"])
 
+
+def _extract_json_text(raw: str) -> str:
+    """Extract the most likely JSON object text from a critic response."""
+
+    text = str(raw or "").strip()
+    fenced = re.search(
+        r"```(?:json)?\s*(.*?)```",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if fenced:
+        text = fenced.group(1).strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return text[start : end + 1]
+    return text
+
+
+def _repair_common_json_commas(text: str) -> str:
+    """Repair only conservative, common comma mistakes in model JSON."""
+
+    repaired = text
+    # Remove trailing commas immediately before an object/array close.
+    repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+    # Insert a missing comma between a completed value and the next object key.
+    repaired = re.sub(
+        r"([}\]])\s*(?=\"[^\"\n]+\"\s*:)",
+        r"\1,",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(\"(?:[^\"\\]|\\.)*\"|true|false|null|-?\d+(?:\.\d+)?)"
+        r"\s*(?=\"[^\"\n]+\"\s*:)",
+        r"\1,",
+        repaired,
+    )
+    return repaired
+
+
+def _safe_parse_semantic_critic_response(
+    raw: str,
+    *,
+    max_tool_calls: int,
+) -> dict:
+    """Parse critic JSON without ever allowing parser failure to change an answer."""
+
+    parse_error = None
+    parse_repaired = False
+
+    try:
+        result = parse_semantic_critic(
+            raw,
+            max_tool_calls=max_tool_calls,
+        )
+        raw_object = parse_json_object(raw)
+    except Exception as exc:
+        parse_error = str(exc)
+        raw_object = {}
+        candidate_text = _extract_json_text(raw)
+        repaired_text = _repair_common_json_commas(candidate_text)
+
+        if repaired_text and repaired_text != candidate_text:
+            try:
+                raw_object = json.loads(repaired_text)
+                result = parse_semantic_critic(
+                    json.dumps(raw_object, ensure_ascii=False),
+                    max_tool_calls=max_tool_calls,
+                )
+                parse_repaired = True
+            except Exception:
+                raw_object = {}
+
+        if not raw_object:
+            return {
+                "decision": "accept",
+                "accept": True,
+                "confidence": "low",
+                "reason": "Malformed critic JSON; preserving the original prediction.",
+                "evidence": [],
+                "error_type": "none",
+                "answer_contract": {},
+                "verification_tool_calls": [],
+                "repair_instruction": "",
+                "must_use_columns": [],
+                "avoid_columns": [],
+                "must_return": "",
+                "parse_error": parse_error or "Malformed critic JSON",
+                "parse_repaired": False,
+            }
+
+    if isinstance(raw_object, dict):
+        for field in ("confidence", "evidence"):
+            if field in raw_object:
+                result[field] = raw_object[field]
+
+    result.setdefault("confidence", "low")
+    result.setdefault("evidence", [])
+    result["parse_error"] = parse_error
+    result["parse_repaired"] = parse_repaired
+    return result
+
+
+def _observation_has_positive_evidence(observations: list[str]) -> bool:
+    if not observations:
+        return False
+    text = "\n".join(observations).lower()
+    negative_markers = (
+        "no high-confidence value matches found",
+        "no value matches found",
+        "tool error",
+        "unknown tool",
+    )
+    return not any(marker in text for marker in negative_markers)
+
 def semantic_state_is_usable(
     semantic_state: dict | None,
     semantic_state_data: dict | None,
@@ -756,18 +899,10 @@ def run_semantic_critic_loop(
             )
 
             critic_raw = llm.generate(critic_prompt)
-            critic_result = parse_semantic_critic(
+            critic_result = _safe_parse_semantic_critic_response(
                 critic_raw,
                 max_tool_calls=react_max_tool_calls,
             )
-
-            # Preserve conservative fields even if the existing parser ignores
-            # unknown JSON keys.
-            raw_object = parse_json_object(critic_raw)
-            if isinstance(raw_object, dict):
-                for field in ("confidence", "evidence"):
-                    if field in raw_object:
-                        critic_result[field] = raw_object[field]
 
             decision = str(critic_result.get("decision", "accept")).lower()
             confidence = str(critic_result.get("confidence", "low")).lower()
@@ -785,6 +920,8 @@ def run_semantic_critic_loop(
                 "tool_calls": [],
                 "observation": "",
                 "verified_columns": sorted(verified_columns),
+                "critic_parse_error": critic_result.get("parse_error"),
+                "critic_parse_repaired": bool(critic_result.get("parse_repaired")),
             }
 
             if decision == "accept":
@@ -922,6 +1059,23 @@ def run_semantic_critic_loop(
             )
 
             rejection_reasons = []
+
+            # A missing original value must not be replaced by an invented
+            # default. Require newly collected, positive dataframe evidence
+            # before adopting any replacement, and never accept common sentinel
+            # substitutions as proof of the answer.
+            if original_pred is None:
+                if not _observation_has_positive_evidence(
+                    post_code_observations_list
+                ):
+                    rejection_reasons.append(
+                        "missing original value had no new positive verification evidence"
+                    )
+                if semantic_pred in (None, 0, False, "") or semantic_pred == []:
+                    rejection_reasons.append(
+                        "candidate substituted an unsupported default value"
+                    )
+
             if is_execution_error(semantic_pred):
                 rejection_reasons.append("candidate execution failed")
             if candidate_violations:
@@ -995,6 +1149,7 @@ def run_semantic_critic_loop(
                 {
                     "stage": f"semantic_critic_{semantic_step_idx}",
                     "error": str(exc),
+                    "critic_raw": locals().get("critic_raw", ""),
                     "kept_previous_prediction": True,
                 }
             )
