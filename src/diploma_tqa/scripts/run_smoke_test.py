@@ -4,7 +4,7 @@ import json
 import numbers
 import re
 import textwrap
-from datetime import datetime
+import datetime
 
 import numpy as np
 import pandas as pd
@@ -1099,7 +1099,7 @@ def run_semantic_critic_loop(
             semantic_code = extract_answer_body(semantic_raw)
             semantic_pred = execute_answer_body(semantic_code, df)
 
-            candidate_violations = candidate_contract_violations(
+            candidate_violations = semantic_critic_trigger_reasons(
                 question=question,
                 answer_type=answer_type,
                 pred=semantic_pred,
