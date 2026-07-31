@@ -450,7 +450,7 @@ def semantic_critic_trigger_reasons(
         pred=pred,
         code=code,
         columns=columns,
-        strict_list_length=False,  # Restore the 0.841 behavior.
+        strict_list_length=False,
     )
 
     requested_length = expected_exact_list_length(question)

@@ -254,7 +254,8 @@ Preservation rules:
 - A different interpretation is not enough to repair.
 - If uncertainty remains, use need_evidence. If no new useful evidence can be requested, accept.
 - Treat a case-insensitive exact entity match in post-code observations as positive evidence.
-- If a case-sensitive lookup returned None but verified evidence contains the same normalized entity and the requested scalar field, request a minimal case-insensitive lookup repair.
+- If a named-entity lookup returns None and the code uses exact string equality, choose a normalization-only repair that casefolds and removes non-alphanumeric characters from both compared values.
+- Preserve the same dataframe column, parsed field, returned field, filter, and operation; do not repeat the same find_values request.
 - Never change a column without verified evidence that the replacement represents the question better.
 - Additional helper columns or intermediate computations are not inherently errors.
 - Absence from the five-row preview is not evidence of absence from the dataframe.
@@ -278,8 +279,7 @@ Repair eligibility:
 - If more dataframe evidence is needed, use need_evidence rather than repair.
 - Give a concrete, minimal repair instruction. Do not redesign unrelated parts of the code.
 - If the only deterministic violation is wrong_list_length and the current code already produces a plausible ordered sequence, repair only the length: preserve the existing filtering, membership, and order, and return the first requested N values. Do not re-interpret the whole question.
-- If an underfilled list uses unique() or drop_duplicates() without a uniqueness request, repair only when evidence confirms at least N matching rows; otherwise accept.
-- Do not repair a nested multi-column result merely by flattening it; repair only when evidence identifies the requested return column.
+- If a nested result was built from multiple dataframe columns and no single requested return column is verified, decision must be accept; never repair by flattening.
 - Request at most 3 verification tool calls.
 
 Return one compact JSON object in exactly this shape. Use one-line string values, escape embedded quotes, and do not add comments or markdown:
@@ -395,6 +395,7 @@ Rules:
 - Always include an explicit return statement.
 - Use only existing dataframe columns.
 - Make the smallest possible change needed to resolve the listed deterministic violation.
+- For a normalization-only repair, change only the string comparison and normalize both sides with ''.join(ch for ch in str(value).casefold() if ch.isalnum()).
 - Preserve existing filters, grouping, duplicate handling, list length, comparison boundaries, unit interpretation, and return column unless the verified evidence explicitly identifies that exact component as wrong.
 - Do not introduce a new dataframe column unless it is present in the supplied verified observations or grounded schema evidence.
 - Do not change equality to an inequality when the question says exactly.
@@ -403,7 +404,6 @@ Rules:
 - Do not perform unit conversion unless the input unit is established by the evidence.
 - If the question requests N items, return exactly N items unless it explicitly permits fewer.
 - If the question requests unique/distinct/different values, deduplicate the output.
-- When verified evidence says underfilling was caused by unrequested unique() or drop_duplicates(), remove only that deduplication and preserve all other logic.
 - Never flatten a nested multi-column result unless the verified critic evidence clearly identifies the requested return column.
 - For top-ranked/best-ranked rows using a rank column, smaller rank values are better unless evidence says otherwise.
 - For list answers, return a native Python list. When slicing a NumPy array, pandas Index, Series, or unique() result, call .tolist() before returning it.
