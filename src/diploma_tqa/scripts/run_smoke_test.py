@@ -665,17 +665,26 @@ def _safe_parse_semantic_critic_response(
     return result
 
 
-def _observation_has_positive_evidence(observations: list[str]) -> bool:
-    if not observations:
-        return False
-    text = "\n".join(observations).lower()
+def _observation_has_positive_evidence(
+    observations: list[str],
+) -> bool:
     negative_markers = (
         "no high-confidence value matches found",
         "no value matches found",
         "tool error",
         "unknown tool",
     )
-    return not any(marker in text for marker in negative_markers)
+
+    for observation in observations:
+        text = str(observation).lower()
+
+        if text and not any(
+            marker in text
+            for marker in negative_markers
+        ):
+            return True
+
+    return False
 
 def semantic_state_is_usable(
     semantic_state: dict | None,
@@ -1024,9 +1033,32 @@ def run_semantic_critic_loop(
                 semantic_react_steps.append(step_log)
                 break
 
-            if not _error_types_support_violations(
-                error_types,
-                original_violations,
+            repair_instruction = str(
+                critic_result.get("repair_instruction", "")
+            ).casefold()
+
+            safe_normalization_repair = (
+                    original_pred is None
+                    and "wrong_output_type" in original_violations
+                    and "entity_mismatch" in error_types
+                    and confidence == "high"
+                    and any(
+                marker in repair_instruction
+                for marker in (
+                    "normalize",
+                    "normalise",
+                    "casefold",
+                    "alphanumeric",
+                )
+            )
+            )
+
+            if not (
+                    _error_types_support_violations(
+                        error_types,
+                        original_violations,
+                    )
+                    or safe_normalization_repair
             ):
                 step_log["kept_previous_prediction"] = True
                 step_log["repair_skipped"] = (
