@@ -21,35 +21,19 @@ from diploma_tqa.prompts.error_fix_prompts import make_error_fix_prompt
 from diploma_tqa.execution.code_extract import extract_answer_body
 from diploma_tqa.execution.pandas_executor import execute_answer_body
 
-from diploma_tqa.tools.dataframe_tools import find_columns
-
 from diploma_tqa.tools.tool_prompts import (
     make_tool_planning_prompt,
-    make_react_tool_planning_prompt,
-    make_post_code_react_action_prompt,
-    make_post_code_react_decision_prompt,
-    make_post_code_react_repair_prompt, make_semantic_react_repair_prompt, make_semantic_react_critic_prompt,
+    make_semantic_react_repair_prompt,
+    make_semantic_react_critic_prompt,
 )
 
 from diploma_tqa.tools.tool_runner import (
     parse_tool_calls,
-    parse_react_plan,
     execute_tool_calls,
-    format_react_plan,
     parse_json_object,
-    execute_post_code_react_action, parse_semantic_critic,
+    parse_semantic_critic,
 )
 
-from diploma_tqa.schema.semantic_state import (
-    build_semantic_state,
-    format_semantic_state, ALLOWED_OPERATIONS,
-)
-
-from diploma_tqa.schema.semantic_state import (
-    ALLOWED_AGGREGATIONS,
-    ALLOWED_OPERATIONS,
-    build_semantic_state,
-)
 
 from diploma_tqa.schema.grounded_schema import (
     GroundedSchemaIndex,
@@ -686,155 +670,6 @@ def _observation_has_positive_evidence(
 
     return False
 
-def semantic_state_is_usable(
-    semantic_state: dict | None,
-    semantic_state_data: dict | None,
-) -> tuple[bool, str | None]:
-    """
-    Decide whether semantic state is safe enough to guide code generation.
-
-    Invalid or ambiguous states fall back to the ordinary schema-hint mode.
-    """
-
-    if not semantic_state:
-        return False, "semantic state is missing"
-
-    validation_errors = (
-        semantic_state_data.get("validation_errors", [])
-        if semantic_state_data
-        else []
-    )
-
-    if validation_errors:
-        return False, "semantic state has validation errors"
-
-    if semantic_state.get("certainty") == "ambiguous":
-        return False, "semantic state is ambiguous"
-
-    if semantic_state.get("operation_family") == "unknown":
-        return False, "semantic operation is unknown"
-
-    return True, None
-
-def run_simple_post_code_react_loop(
-    row,
-    df,
-    llm,
-    code,
-    pred,
-    tool_observations,
-    attempts,
-    args,
-):
-    post_react_steps = []
-
-    success = not is_execution_error(pred)
-    error = None if success else str(pred)
-
-    if args.post_code_react_mode != "simple-inspect" or not success:
-        return code, pred, success, error, post_react_steps, ""
-
-    # 1. Ask for one inspection action.
-    action_prompt = make_post_code_react_action_prompt(
-        row=row,
-        df=df,
-        generated_code=code,
-        prediction=pred,
-        tool_observations=tool_observations,
-    )
-
-    action_raw = llm.generate(action_prompt)
-    action_result = parse_json_object(action_raw)
-    action = action_result.get("action", {"name": "profile_used_columns", "args": {}})
-
-    if not isinstance(action, dict):
-        action = {"name": "profile_used_columns", "args": {}}
-
-    action_name = action.get("name", "profile_used_columns")
-
-    if action_name == "accept":
-        post_react_steps.append({
-            "stage": "post_code_react_action",
-            "raw_response": action_raw,
-            "action_result": action_result,
-            "action": action,
-            "observation": "",
-            "decision_result": {"decision": "keep", "reason": "Action chose accept."},
-        })
-        return code, pred, success, error, post_react_steps, ""
-
-    # 2. Execute the action.
-    observation = execute_post_code_react_action(action=action, df=df, code=code)
-
-    # 3. Decide keep vs rewrite from the observation.
-    decision_prompt = make_post_code_react_decision_prompt(
-        row=row,
-        df=df,
-        generated_code=code,
-        prediction=pred,
-        observation=observation,
-    )
-
-    decision_raw = llm.generate(decision_prompt)
-    decision_result = parse_json_object(decision_raw)
-    decision = decision_result.get("decision", "keep")
-
-    step_log = {
-        "stage": "post_code_react",
-        "action_raw_response": action_raw,
-        "action_result": action_result,
-        "action": action,
-        "observation": observation,
-        "decision_raw_response": decision_raw,
-        "decision_result": decision_result,
-        "decision": decision,
-    }
-
-    # 4. Keep old answer unless rewrite is explicitly requested.
-    if decision != "rewrite":
-        post_react_steps.append(step_log)
-        return code, pred, success, error, post_react_steps, observation
-
-    # 5. Rewrite once.
-    rewrite_instruction = decision_result.get("rewrite_instruction", "Rewrite the code using the observation.")
-
-    repair_prompt = make_post_code_react_repair_prompt(
-        row=row,
-        df=df,
-        previous_code=code,
-        previous_prediction=pred,
-        observation=observation,
-        rewrite_instruction=rewrite_instruction,
-    )
-
-    repair_raw = llm.generate(repair_prompt)
-    repair_code = extract_answer_body(repair_raw)
-    repair_pred = execute_answer_body(repair_code, df)
-
-    step_log.update({
-        "repair_raw_response": repair_raw,
-        "repair_code": repair_code,
-        "repair_prediction": repair_pred,
-        "repair_success": not is_execution_error(repair_pred),
-    })
-
-    post_react_steps.append(step_log)
-
-    attempts.append({
-        "stage": "post_code_react_rewrite",
-        "raw_response": repair_raw,
-        "code": repair_code,
-        "prediction": repair_pred,
-        "observation": observation,
-        "rewrite_instruction": rewrite_instruction,
-    })
-
-    if not is_execution_error(repair_pred):
-        return repair_code, repair_pred, True, None, post_react_steps, observation
-
-    # Rewrite crashed: keep old executed prediction.
-    step_log["kept_previous_prediction"] = True
-    return code, pred, success, error, post_react_steps, observation
 
 def tool_call_key(call):
     return json.dumps(call, sort_keys=True, ensure_ascii=False)
@@ -849,7 +684,7 @@ def run_semantic_critic_loop(
     tool_observations,
     attempts,
     args,
-    react_max_tool_calls,
+    critic_max_tool_calls,
     pre_code_tool_calls=None,
     grounded_schema=None,
 ):
@@ -936,7 +771,7 @@ def run_semantic_critic_loop(
             critic_raw = llm.generate(critic_prompt)
             critic_result = _safe_parse_semantic_critic_response(
                 critic_raw,
-                max_tool_calls=react_max_tool_calls,
+                max_tool_calls=critic_max_tool_calls,
             )
 
             decision = str(critic_result.get("decision", "accept")).lower()
@@ -1236,16 +1071,13 @@ def main():
             "none",
             "hint",
             "grounded",
-            "semantic-state",
         ],
         default="none",
         help=(
             "Schema guidance mode. "
             "'hint' uses lexical candidate-column retrieval. "
             "'grounded' adds deterministic dataframe profiles and real "
-            "value links without another LLM call. "
-            "'semantic-state' uses one LLM call to predict validated "
-            "column roles, operation family, filters, and answer kind."
+            "value links without another LLM call."
         ),
     )
 
@@ -1271,7 +1103,7 @@ def main():
     # optional tool usage mode (modes: auto-schema, inspect)
     parser.add_argument(
         "--tool-mode",
-        choices=["none", "auto-schema", "inspect", "react-inspect"],
+        choices=["none", "inspect"],  # mention react-inspect idea in thesis as exploratory but not helpful
         default="none",
     )
 
@@ -1279,13 +1111,6 @@ def main():
         "--indices-file",
         default=None,
         help="Optional text file containing 0-based example indices to evaluate, one per line.",
-    )
-
-    parser.add_argument(
-        "--react-observation-mode",
-        choices=["raw", "plan", "plan_plus_raw"],
-        default="plan",
-        help="Controls what react-inspect passes to the code-generation prompt.",
     )
 
     parser.add_argument(
@@ -1297,15 +1122,14 @@ def main():
 
     parser.add_argument(
         "--post-code-react-mode",
-        choices=["none", "semantic-critic", "simple-inspect"],
+        choices=["none", "semantic-critic"],
         default="none",
-        help="Optional post-execution ReAct. simple-inspect runs one inspection action then optionally rewrites once.",
+        help="Optional conservative post-execution semantic critic.",
     )
 
     args = parser.parse_args()
 
-    REACT_MAX_STEPS = 2
-    REACT_MAX_TOOL_CALLS = 3
+    SEMANTIC_CRITIC_MAX_TOOL_CALLS = 3
     INSPECT_MAX_TOOL_CALLS = 3
 
     output_dir = Path(args.output_dir)
@@ -1380,33 +1204,10 @@ def main():
         tool_raw = None
         tool_calls = []
         tool_observations = ""
-        react_steps = []
-        latest_plan = {}
-
         semantic_react_steps = []
+        grounded_schema_data = None
 
-        # optional tool stage
-        if args.tool_mode == "auto-schema":
-            # search for relevant columns using the question - automatically
-            try:
-                tool_observations = find_columns(
-                    df=df,
-                    query=row["question"],
-                    top_k=8,
-                )
-                tool_calls = [
-                    {
-                        "name": "find_columns",
-                        "args": {
-                            "query": row["question"],
-                            "top_k": 8,
-                        },
-                    }
-                ]
-            except Exception as e:
-                tool_observations = f"Tool error: {e}"
-
-        elif args.tool_mode == "inspect":
+        if args.tool_mode == "inspect":
             # ask the model if it wants to use any of the tools
             try:
                 tool_prompt = make_tool_planning_prompt(
@@ -1421,202 +1222,6 @@ def main():
 
             except Exception as e:
                 tool_observations = f"Tool planning failed: {e}"
-
-
-        elif args.tool_mode == "react-inspect":
-
-            # iterative tool planning: plan -> act -> observe -> update compact plan
-
-            react_steps = []
-
-            all_tool_calls = []
-
-            all_observations = []
-
-            seen_tool_calls = set()
-
-            latest_plan = {}
-
-            semantic_react_steps = []
-
-            try:
-
-                for step in range(1, REACT_MAX_STEPS + 1):
-
-                    previous_observations = (
-
-                        "\n\n".join(all_observations)
-
-                        if all_observations
-
-                        else ""
-
-                    )
-
-                    tool_prompt = make_react_tool_planning_prompt(
-
-                        row=row,
-
-                        df=df,
-
-                        previous_observations=previous_observations,
-
-                        step=step,
-
-                        max_steps=REACT_MAX_STEPS,
-
-                        max_tool_calls=REACT_MAX_TOOL_CALLS,
-
-                    )
-
-                    raw_plan = llm.generate(tool_prompt)
-
-                    plan = parse_react_plan(
-
-                        raw_plan,
-
-                        max_tool_calls=REACT_MAX_TOOL_CALLS,
-
-                    )
-
-                    thought = plan.get("thought", "")
-
-                    current_plan = plan.get("current_plan", {})
-
-                    if current_plan:
-                        latest_plan = current_plan
-
-                    step_calls = plan.get("tool_calls", [])
-
-                    # Remove repeated calls within the same example.
-
-                    new_calls = []
-
-                    for call in step_calls:
-
-                        key = tool_call_key(call)
-
-                        if key not in seen_tool_calls:
-                            seen_tool_calls.add(key)
-
-                            new_calls.append(call)
-
-                    step_calls = new_calls
-
-                    if not step_calls:
-                        react_steps.append(
-
-                            {
-
-                                "step": step,
-
-                                "thought": thought,
-
-                                "raw_response": raw_plan,
-
-                                "current_plan": current_plan,
-
-                                "tool_calls": [],
-
-                                "observation": "",
-
-                                "stop": True,
-
-                            }
-
-                        )
-
-                        break
-
-                    observation = execute_tool_calls(step_calls, df)
-
-                    all_tool_calls.extend(step_calls)
-
-                    all_observations.append(
-
-                        f"Step {step} observations:\n{observation}"
-
-                    )
-
-                    react_steps.append(
-
-                        {
-
-                            "step": step,
-
-                            "thought": thought,
-
-                            "raw_response": raw_plan,
-
-                            "current_plan": current_plan,
-
-                            "tool_calls": step_calls,
-
-                            "observation": observation,
-
-                            "stop": bool(plan.get("stop", False)),
-
-                        }
-
-                    )
-
-                    # If the model explicitly says stop after these calls,
-
-                    # allow the next iteration only if there are remaining steps?
-
-                    # For now, respect stop after saving the observation.
-
-                    if plan.get("stop", False):
-                        break
-
-                compact_plan = format_react_plan(latest_plan)
-
-                raw_observations = "\n\n".join(all_observations)
-
-                if args.react_observation_mode == "raw":
-
-                    tool_observations = raw_observations
-
-
-                elif args.react_observation_mode == "plan":
-
-                    tool_observations = compact_plan
-
-
-                elif args.react_observation_mode == "plan_plus_raw":
-
-                    if compact_plan and raw_observations:
-
-                        tool_observations = (
-
-                                compact_plan
-
-                                + "\n\nSupporting observations:\n"
-
-                                + raw_observations
-
-                        )
-
-                    else:
-
-                        tool_observations = compact_plan or raw_observations
-
-                tool_raw = json.dumps(react_steps, ensure_ascii=False)
-
-                tool_calls = all_tool_calls
-
-
-            except Exception as e:
-
-                tool_observations = f"ReAct tool planning failed: {e}"
-
-                tool_raw = None
-
-                tool_calls = []
-
-                react_steps = []
-
-        grounded_schema_data = None
 
         if args.schema_mode == "grounded":
             grounded_index = grounded_index_cache.get(
@@ -1648,41 +1253,7 @@ def main():
                 )
             )
 
-        semantic_state_data = None
-        semantic_state = None
-        semantic_state_text = ""
-
-        if args.schema_mode == "semantic-state":
-            try:
-                semantic_state_data = build_semantic_state(
-                    question=row["question"],
-                    df=df,
-                    llm=llm,
-                    parse_json_object=parse_json_object,
-                    top_k=8,
-                )
-
-                semantic_state = semantic_state_data["state"]
-                semantic_state_text = format_semantic_state(semantic_state)
-
-            except Exception as e:
-                semantic_state_data = {
-                    "candidate_columns": [],
-                    "prompt": None,
-                    "raw_response": None,
-                    "parsed_state": None,
-                    "state": None,
-                    "validation_errors": [
-                        f"Semantic-state generation failed: {e}"
-                    ],
-                }
-
-                semantic_state = None
-                semantic_state_text = ""
-
         effective_schema_mode = args.schema_mode
-        effective_semantic_state = semantic_state
-        semantic_state_fallback_reason = None
 
         if args.schema_mode == "grounded" and not (
                 grounded_schema_data
@@ -1691,24 +1262,11 @@ def main():
             # Weak schema evidence is safer omitted.
             effective_schema_mode = "none"
 
-        if args.schema_mode == "semantic-state":
-            semantic_state_usable, semantic_state_fallback_reason = (
-                semantic_state_is_usable(
-                    semantic_state=semantic_state,
-                    semantic_state_data=semantic_state_data,
-                )
-            )
-
-            if not semantic_state_usable:
-                effective_schema_mode = "hint"
-                effective_semantic_state = None
-
         prompt = make_baseline_prompt(
             row=row,
             df=df,
             schema_mode=effective_schema_mode,
             tool_observations=tool_observations,
-            semantic_state=effective_semantic_state,
             grounded_schema=grounded_schema_data,
         )
 
@@ -1767,46 +1325,26 @@ def main():
                 success = True
                 error = None
 
-                if args.post_code_react_mode == "simple-inspect":
-                    (
-                        code,
-                        pred,
-                        success,
-                        error,
-                        post_code_react_steps,
-                        post_code_observations,
-                    ) = run_simple_post_code_react_loop(
-                        row=row,
-                        df=df,
-                        llm=llm,
-                        code=code,
-                        pred=pred,
-                        tool_observations=tool_observations,
-                        attempts=attempts,
-                        args=args,
-                    )
-                    semantic_react_steps = post_code_react_steps
-                else:
-                    (
-                        code,
-                        pred,
-                        success,
-                        error,
-                        semantic_react_steps,
-                        post_code_observations,
-                    ) = run_semantic_critic_loop(
-                        row=row,
-                        df=df,
-                        llm=llm,
-                        code=code,
-                        pred=pred,
-                        tool_observations=tool_observations,
-                        attempts=attempts,
-                        args=args,
-                        react_max_tool_calls=REACT_MAX_TOOL_CALLS,
-                        pre_code_tool_calls=tool_calls,
-                        grounded_schema=grounded_schema_data,
-                    )
+                (
+                    code,
+                    pred,
+                    success,
+                    error,
+                    semantic_react_steps,
+                    post_code_observations,
+                ) = run_semantic_critic_loop(
+                    row=row,
+                    df=df,
+                    llm=llm,
+                    code=code,
+                    pred=pred,
+                    tool_observations=tool_observations,
+                    attempts=attempts,
+                    args=args,
+                    critic_max_tool_calls=SEMANTIC_CRITIC_MAX_TOOL_CALLS,
+                    pre_code_tool_calls=tool_calls,
+                    grounded_schema=grounded_schema_data,
+                )
 
 
         except Exception as e:
@@ -1853,14 +1391,7 @@ def main():
             "tool_raw": tool_raw,
             "tool_calls": tool_calls,
             "tool_observations": tool_observations,
-            "react_steps": react_steps if args.tool_mode == "react-inspect" else None,
-            "num_react_steps": len(react_steps) if args.tool_mode == "react-inspect" else 0,
             "num_tool_calls": len(tool_calls),
-
-            "react_observation_mode": (
-                args.react_observation_mode if args.tool_mode == "react-inspect" else None
-            ),
-            "react_final_plan": latest_plan if args.tool_mode == "react-inspect" else None,
 
             "post_code_react_mode": args.post_code_react_mode,
             "post_code_react_max_retries": args.post_code_react_max_retries,
@@ -1876,36 +1407,7 @@ def main():
             "num_attempts": len(attempts),
             "attempts": attempts,
 
-            "semantic_state": semantic_state,
-            "semantic_state_candidates": (
-                semantic_state_data.get("candidate_columns", [])
-                if semantic_state_data
-                else []
-            ),
-            "semantic_state_raw_response": (
-                semantic_state_data.get("raw_response")
-                if semantic_state_data
-                else None
-            ),
-            "semantic_state_parsed": (
-                semantic_state_data.get("parsed_state")
-                if semantic_state_data
-                else None
-            ),
-            "semantic_state_validation_errors": (
-                semantic_state_data.get("validation_errors", [])
-                if semantic_state_data
-                else []
-            ),
-            "semantic_state_valid": (
-                bool(semantic_state)
-                and not semantic_state_data.get("validation_errors", [])
-                if semantic_state_data
-                else False
-            ),
-
             "effective_schema_mode": effective_schema_mode,
-            "semantic_state_fallback_reason": semantic_state_fallback_reason,
 
             "example_index": original_index,
 
@@ -1976,11 +1478,6 @@ def main():
     if args.tool_mode == "inspect":
         total_model_calls += len(logs)
 
-    elif args.tool_mode == "react-inspect":
-        total_model_calls += sum(
-            item.get("num_react_steps", 0)
-            for item in logs
-        )
 
     if args.post_code_react_mode == "semantic-critic":
         for item in logs:
@@ -1991,9 +1488,6 @@ def main():
                 # one extra LLM call if repair code was generated
                 if step.get("repair_raw_response") is not None:
                     total_model_calls += 1
-
-    if args.schema_mode == "semantic-state":
-        total_model_calls += len(logs)
 
     # evaluate predictions using the official task evaluator
     try:
@@ -2014,77 +1508,6 @@ def main():
 
         "schema_mode": args.schema_mode,
         "tool_mode": args.tool_mode,
-        "react_observation_mode": (
-            args.react_observation_mode if args.tool_mode == "react-inspect" else None
-        ),
-
-        "semantic_state_enabled": args.schema_mode == "semantic-state",
-
-        "semantic_state_valid_examples": sum(
-            1
-            for item in logs
-            if item.get("semantic_state") is not None
-        ),
-
-        "semantic_state_clean_examples": sum(
-            1
-            for item in logs
-            if item.get("semantic_state") is not None
-            and not item.get("semantic_state_validation_errors")
-        ),
-
-        "semantic_state_validation_error_examples": sum(
-            1
-            for item in logs
-            if item.get("semantic_state_validation_errors")
-        ),
-
-        "semantic_state_ambiguous_examples": sum(
-            1
-            for item in logs
-            if (
-                    item.get("semantic_state")
-                    and item["semantic_state"].get("certainty") == "ambiguous"
-            )
-        ),
-
-        "semantic_state_operation_counts": {
-            operation: sum(
-                1
-                for item in logs
-                if (
-                        item.get("semantic_state")
-                        and item["semantic_state"].get("operation_family") == operation
-                )
-            )
-            for operation in sorted(ALLOWED_OPERATIONS)
-        },
-
-        "semantic_state_aggregation_counts": {
-            aggregation: sum(
-                1
-                for item in logs
-                if (
-                        item.get("semantic_state")
-                        and item["semantic_state"].get("aggregation") == aggregation
-                )
-            )
-            for aggregation in sorted(ALLOWED_AGGREGATIONS)
-        },
-
-        "semantic_state_operation_aggregation_counts": {
-            f"{operation}:{aggregation}": sum(
-                1
-                for item in logs
-                if (
-                        item.get("semantic_state")
-                        and item["semantic_state"].get("operation_family") == operation
-                        and item["semantic_state"].get("aggregation") == aggregation
-                )
-            )
-            for operation in sorted(ALLOWED_OPERATIONS)
-            for aggregation in sorted(ALLOWED_AGGREGATIONS)
-        },
 
         "grounded_schema_enabled": (
                 args.schema_mode == "grounded"
@@ -2129,13 +1552,6 @@ def main():
         "execution_failed": num_failed,
         "execution_success_rate": num_success / len(logs) if logs else 0,
 
-        "react_max_steps": REACT_MAX_STEPS if args.tool_mode == "react-inspect" else None,
-        "react_max_tool_calls": REACT_MAX_TOOL_CALLS if args.tool_mode == "react-inspect" else None,
-        "avg_react_steps": (
-            sum(item.get("num_react_steps", 0) for item in logs) / len(logs)
-            if args.tool_mode == "react-inspect" and logs
-            else None
-        ),
         "avg_tool_calls": (
             sum(item.get("num_tool_calls", 0) for item in logs) / len(logs)
             if logs

@@ -1,19 +1,16 @@
-import json
-
 from typing import Any
 
 from diploma_tqa.schema.grounded_schema import (
     format_grounded_schema_evidence,
 )
-
 from diploma_tqa.schema.schema_linker import make_schema_hint
+
 
 def make_baseline_prompt(
     row: dict,
     df,
     schema_mode: str = "none",
     tool_observations: str = "",
-    semantic_state=None,
     grounded_schema: dict[str, Any] | None = None,
 ) -> str:
     """
@@ -23,9 +20,7 @@ def make_baseline_prompt(
     - none: no extra schema guidance
     - hint: lexical schema-linking hint
     - grounded: deterministic table-grounded structural schema
-    - semantic-state: validated LLM-generated semantic interpretation
     """
-
 
     question = row["question"]
     answer_type = row.get("type", "unknown")
@@ -42,80 +37,6 @@ Schema hint:
         schema_section = format_grounded_schema_evidence(
             grounded_schema or {}
         )
-
-    elif schema_mode == "semantic-state":
-        if semantic_state:
-            semantic_state_json = json.dumps(
-                semantic_state,
-                ensure_ascii=False,
-                indent=2,
-            )
-
-            schema_section = f"""
-Proposed semantic state:
-{semantic_state_json}
-
-Semantic-state instructions:
-- Treat the semantic state as a planning suggestion, not as verified truth.
-- The original question, full DataFrame schema, dtypes, sample rows, and tool
-  observations are more authoritative than the semantic state.
-- You may use exact DataFrame columns that are not present in the semantic
-  state when the question clearly requires them.
-- Ignore any role, filter, operation, or aggregation that conflicts with the
-  original question or table evidence.
-- Never invent a filter, literal value, proxy relationship, or column meaning.
-- Generic phrases such as "given season", "given year", "in the dataset", and
-  "for a person" are not literal filter values.
-- Do not interpret one column as another concept without explicit evidence.
-  For example, do not use Heredity as a proxy for gender.
-
-Operation guidance:
-- Use grouped_argmax or grouped_argmin only when the question asks to compare
-  groups after aggregating rows.
-- Explicit grouped aggregation signals include:
-  "total", "sum", "combined", "average", "mean", "number of", and "count".
-- If the question asks for the row associated with the largest or smallest
-  individual value, use row-level idxmax() or idxmin().
-- Do not infer aggregation="sum" merely from words such as "largest",
-  "highest", "most", or "longest".
-
-Aggregation guidance:
-- aggregation="mode" means the most frequent value.
-- aggregation="nunique" means the number of distinct non-null values.
-- For operation_family="unique_values", return the actual unique values using
-  .dropna().unique().tolist(), not the distinct count.
-- aggregation="count" means counting rows or non-null values according to the
-  original question.
-
-Implementation guidance:
-- Before sum, mean, min, max, ranking, or numeric comparison, inspect the dtype.
-- If a numeric value is stored as formatted text, clean it before using
-  pd.to_numeric(..., errors="coerce").
-- Follow requested output transformations from the original question, such as
-  converting month numbers to month names or returning the first three letters.
-
-Example grouped aggregation:
-
-Question:
-Which department has the highest average monthly income?
-
-Computation:
-df.groupby("Department")["MonthlyIncome"].mean().idxmax()
-
-Example row-level selection:
-
-Question:
-What is the department of the employee with the highest monthly income?
-
-Computation:
-df.loc[df["MonthlyIncome"].idxmax(), "Department"]
-""".strip()
-
-        else:
-            schema_section = """
-Semantic-state generation was unavailable or invalid.
-Answer using the original question, DataFrame schema, and tool observations.
-""".strip()
 
     tool_section = ""
 

@@ -1,8 +1,11 @@
 import json
 import re
 
-from diploma_tqa.tools.dataframe_tools import find_columns, profile_column, find_values, profile_used_columns
-
+from diploma_tqa.tools.dataframe_tools import (
+    find_columns,
+    profile_column,
+    find_values,
+)
 
 def extract_json_object(text: str) -> dict:
     # Extract json object from model response - model should return json,
@@ -48,94 +51,6 @@ def parse_tool_calls(raw: str, max_tool_calls: int = 3) -> list[dict]:
             valid.append({"name": name, "args": args})
 
     return valid
-
-
-def format_react_plan(plan: dict) -> str:
-    if not plan:
-        return ""
-
-    lines = ["ReAct inspection plan for code generation:"]
-
-    relevant_columns = plan.get("relevant_columns", [])
-    value_mappings = plan.get("value_mappings", [])
-    operation = plan.get("operation", "")
-    avoid = plan.get("avoid", [])
-
-    if relevant_columns:
-        lines.append(f"- Relevant columns: {relevant_columns}")
-
-    if value_mappings:
-        lines.append("- Value mappings:")
-        for item in value_mappings:
-            lines.append(f"  - {item}")
-
-    if operation:
-        lines.append(f"- Operation: {operation}")
-
-    if avoid:
-        lines.append("- Avoid:")
-        for item in avoid:
-            lines.append(f"  - {item}")
-
-    return "\n".join(lines)
-
-def parse_react_plan(raw: str, max_tool_calls: int = 3) -> dict:
-    obj = extract_json_object(raw)
-
-    if not isinstance(obj, dict):
-        return {
-            "thought": "",
-            "tool_calls": [],
-            "stop": True,
-            "parse_error": "Invalid JSON object",
-        }
-
-    thought = obj.get("thought", "")
-    if not isinstance(thought, str):
-        thought = ""
-
-    stop = bool(obj.get("stop", False))
-    calls = obj.get("tool_calls", [])
-
-    valid_calls = []
-    if isinstance(calls, list):
-        for call in calls:
-            if not isinstance(call, dict):
-                continue
-
-            name = call.get("name")
-            args = call.get("args", {})
-
-            if name in {"find_columns", "profile_column", "find_values"} and isinstance(args, dict):
-                valid_calls.append({"name": name, "args": args})
-
-            if len(valid_calls) >= max_tool_calls:
-                break
-
-    current_plan = obj.get("current_plan", {})
-    if not isinstance(current_plan, dict):
-        current_plan = {}
-
-    def clean_string_list(value):
-        if not isinstance(value, list):
-            return []
-        return [str(x) for x in value if isinstance(x, (str, int, float))]
-
-    current_plan = {
-        "relevant_columns": clean_string_list(current_plan.get("relevant_columns", [])),
-        "value_mappings": clean_string_list(current_plan.get("value_mappings", [])),
-        "operation": str(current_plan.get("operation", "") or ""),
-        "avoid": clean_string_list(current_plan.get("avoid", [])),
-    }
-
-    return {
-        "thought": thought,
-        "tool_calls": valid_calls,
-        "stop": stop or len(valid_calls) == 0,
-        "current_plan": current_plan,
-        "parse_error": None,
-    }
-
 
 def parse_semantic_critic(raw: str, max_tool_calls: int = 3) -> dict:
     obj = extract_json_object(raw)
@@ -268,30 +183,3 @@ def parse_json_object(raw: str) -> dict:
         return json.loads(match.group(0))
     except Exception:
         return {}
-
-
-def execute_post_code_react_action(action: dict, df, code: str) -> str:
-    name = action.get("name", "accept")
-    args = action.get("args", {}) or {}
-
-    try:
-        if name == "accept":
-            return "No inspection requested."
-
-        if name == "profile_used_columns":
-            return profile_used_columns(df, code)
-
-        if name == "profile_column":
-            return profile_column(df, args.get("column", ""))
-
-        if name == "find_values":
-            return find_values(
-                df=df,
-                column=args.get("column", ""),
-                query=args.get("query", ""),
-            )
-
-        return f"Unknown post-code ReAct action: {name}"
-
-    except Exception as e:
-        return f"Post-code ReAct action error: {e}"
