@@ -33,7 +33,7 @@ class OllamaClient:
         response = ollama.generate(
             model=self.model,
             prompt=prompt,
-            think="high",
+            think="False",
             stream=False,
             options={
                 "num_ctx": 32768,
