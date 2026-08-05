@@ -2,6 +2,7 @@ import ollama
 
 
 MISTRAL_MEDIUM_35 = "mistral-medium-3.5:128b-q4_K_M"
+QWEN_36_27B_BF16 = "qwen3.6:27b-bf16"
 
 
 class OllamaClient:
@@ -16,7 +17,21 @@ class OllamaClient:
         self.num_predict = num_predict
 
     def generate(self, prompt: str) -> str:
-        # Preserve the original Qwen request exactly.
+        # Qwen3.6: disable thinking, preserve temperature 0.
+        if self.model == QWEN_36_27B_BF16:
+            response = ollama.generate(
+                model=self.model,
+                prompt=prompt,
+                think=False,
+                stream=False,
+                options={
+                    "temperature": 0.0,
+                    "num_predict": 256,
+                },
+            )
+            return response["response"]
+
+        # Preserve the original Qwen2.5 request exactly.
         if self.model != MISTRAL_MEDIUM_35:
             response = ollama.generate(
                 model=self.model,
@@ -33,7 +48,7 @@ class OllamaClient:
         response = ollama.generate(
             model=self.model,
             prompt=prompt,
-            think="False",
+            think=False,
             stream=False,
             options={
                 "num_ctx": 32768,
