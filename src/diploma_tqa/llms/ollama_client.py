@@ -26,7 +26,7 @@ class OllamaClient:
                 stream=False,
                 options={
                     "temperature": 0.0,
-                    "num_predict": 256,
+                    "num_predict": 2048,
                 },
             )
             return response["response"]
