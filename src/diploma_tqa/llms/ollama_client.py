@@ -30,7 +30,7 @@ class OllamaClient:
                 max_retries=3,
             )
 
-            response = self.deepseek_client.chat.completions.create(
+            response = client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 reasoning_effort="high",
@@ -44,7 +44,7 @@ class OllamaClient:
             if not content:
                 print("[DeepSeek] Retrying high-thinking with 65536 tokens")
 
-                response = self.deepseek_client.chat.completions.create(
+                response = client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
                     reasoning_effort="high",
