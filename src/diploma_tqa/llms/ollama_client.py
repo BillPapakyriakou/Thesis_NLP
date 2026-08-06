@@ -36,7 +36,7 @@ class OllamaClient:
                     {"role": "user", "content": prompt}
                 ],
                 reasoning_effort="high",
-                max_tokens=8192,
+                max_tokens=16384,
                 stream=False,
                 extra_body={
                     "thinking": {
