@@ -30,19 +30,13 @@ class OllamaClient:
                 max_retries=3,
             )
 
-            response = client.chat.completions.create(
+            response = self.deepseek_client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
+                messages=[{"role": "user", "content": prompt}],
                 reasoning_effort="high",
                 max_tokens=16384,
                 stream=False,
-                extra_body={
-                    "thinking": {
-                        "type": "enabled"
-                    }
-                },
+                extra_body={"thinking": {"type": "enabled"}},
             )
 
             content = (response.choices[0].message.content or "").strip()
@@ -50,15 +44,21 @@ class OllamaClient:
             if not content:
                 print("[DeepSeek] Retrying high-thinking with 65536 tokens")
 
-                response = call_deepseek(
-                    thinking=True,
+                response = self.deepseek_client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    reasoning_effort="high",
                     max_tokens=65536,
+                    stream=False,
+                    extra_body={"thinking": {"type": "enabled"}},
                 )
 
                 content = (response.choices[0].message.content or "").strip()
 
             if not content:
-                raise RuntimeError("DeepSeek produced no final answer after high-thinking retry.")
+                raise RuntimeError(
+                    "DeepSeek produced no final answer after high-thinking retry."
+                )
 
             return content
 
