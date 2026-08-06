@@ -17,16 +17,16 @@ class OllamaClient:
         self.num_predict = num_predict
 
     def generate(self, prompt: str) -> str:
-        # Qwen3.6: disable thinking, preserve temperature 0.
+        # Qwen3.6: enable thinking, preserve temperature 0.
         if self.model == QWEN_36_27B_BF16:
             response = ollama.generate(
                 model=self.model,
                 prompt=prompt,
-                think=False,
+                think=True,
                 stream=False,
                 options={
                     "temperature": 0.0,
-                    "num_predict": 2048,
+                    "num_predict": 8192,
                 },
             )
             return response["response"]
