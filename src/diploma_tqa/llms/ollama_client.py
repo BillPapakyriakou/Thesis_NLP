@@ -34,7 +34,7 @@ class OllamaClient:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 reasoning_effort="high",
-                max_tokens=16384,
+                max_tokens=32768,
                 stream=False,
                 extra_body={"thinking": {"type": "enabled"}},
             )
