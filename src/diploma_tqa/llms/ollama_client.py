@@ -45,10 +45,20 @@ class OllamaClient:
                 },
             )
 
-            content = response.choices[0].message.content
+            content = (response.choices[0].message.content or "").strip()
 
             if not content:
-                raise RuntimeError("DeepSeek returned no final response content.")
+                print("[DeepSeek] Retrying high-thinking with 65536 tokens")
+
+                response = call_deepseek(
+                    thinking=True,
+                    max_tokens=65536,
+                )
+
+                content = (response.choices[0].message.content or "").strip()
+
+            if not content:
+                raise RuntimeError("DeepSeek produced no final answer after high-thinking retry.")
 
             return content
 
